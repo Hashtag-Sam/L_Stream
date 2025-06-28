@@ -1,0 +1,464 @@
+
+Lumia Stream Custom Overlay Widget Reference
+===========================================
+
+Overview
+--------
+This document serves as a technical reference for developers building Custom Overlays in Lumia Stream.
+It is styled after StreamElements widget documentation and describes available events, data structure, hooks,
+lifecycle methods, and design conventions.
+
+Core Hooks
+----------
+- window.DATA
+  Access initial config values set in the "Data" tab of the overlay UI.
+
+- window.CODE_ID
+  Unique identifier used to scope overlaySendCustomContent payloads.
+
+- window.addEventListener('onEventReceived', (ev) => {...})
+  Core event listener for all real-time events.
+
+Event Types
+-----------
+
+1. alert.chat
+-------------
+Received when a chat message is sent.
+
+Structure:
+{
+  "type": "alert.chat",
+  "data": {
+    "origin": "twitch" | "kick" | ...,
+    "info": {
+      "username": "User123",
+      "message": "Hello world",
+      "avatar": "https://avatar.url",
+      "color": "#00FF7F",
+      "badges": ["https://badge.png"],
+      "userLevels": {
+        "isSelf": false,
+        "mod": true,
+        "subscriber": false,
+        "follower": true
+      }
+    }
+  }
+}
+
+2. alert.event
+--------------
+Received on alert triggers (follow, sub, bits, etc).
+
+Structure:
+{
+  "type": "alert.event",
+  "data": {
+    "alert": {
+      "alert": "twitch-subscriber",
+      "extraSettings": {
+        "username": "User123",
+        "avatar": "https://avatar.png",
+        "site": "twitch",
+        "duration": 3000
+      }
+    }
+  }
+}
+
+3. custom.overlay-content
+-------------------------
+Used to send custom data from Lumia Custom Code to overlays.
+
+Structure:
+{
+  "type": "custom.overlay-content",
+  "data": {
+    "codeId": "my-widget",
+    "content": "Some string or JSON"
+  }
+}
+
+4. alert.hfx
+------------
+Triggers for HFX events.
+
+Structure:
+{
+  "type": "alert.hfx",
+  "data": {
+    "layer": "hfx-layer",
+    "content": "UUID of HFX asset",
+    "username": "User123",
+    "message": "boom",
+    "volume": 1,
+    "duration": 5000
+  }
+}
+
+5. light.virtual
+----------------
+Triggered when a virtual light action is dispatched.
+
+Structure:
+{
+  "type": "light.virtual",
+  "data": {
+    "uuid": "light-id",
+    "color": { "r": 255, "g": 0, "b": 0 },
+    "brightness": 100,
+    "transition": 0,
+    "duration": 1000
+  }
+}
+
+Design & Lifecycle Patterns
+---------------------------
+
+Startup:
+- Use window.DATA to read config inputs from sidebar.
+- Use window.CODE_ID for scoping overlaySendCustomContent messages.
+
+Events:
+- Listen via window.addEventListener('onEventReceived', ...)
+- Always check ev.detail.type === "event.type" before using payload.
+
+Custom Content:
+- Use overlaySendCustomContent({ codeId, content }) from commands to send data to your widget.
+
+Performance:
+- Use "Events to listen to" multiselect to limit unnecessary traffic.
+- Minimize DOM updates unless the event type matches exactly.
+
+Best Practices
+--------------
+- Always validate ev.detail before use.
+- Sanitize any user-generated content before inserting into innerHTML.
+- Prefer `textContent` when inserting raw text.
+- Leverage localStorage to persist values across overlay reloads.
+
+Lumia Stream Custom Overlay Widget Reference (Full)
+===================================================
+
+Purpose
+-------
+This is a full technical reference for building widgets in Lumia Stream's Custom Overlay layer system.
+It includes ALL known events, helper functions, variable usage, configuration structures, and examples.
+
+Use this to build chatboxes, alert displays, games, interactive panels, and more.
+
+Runtime Environment
+-------------------
+- JavaScript (runs in a safe, dedicated worker thread)
+- DOM is fully available (for HTML/CSS/JS overlays)
+- All config data is available via `window.DATA`
+- Events are dispatched via `onEventReceived`
+- Custom content sent via `overlaySendCustomContent`
+
+Built-in Variables
+------------------
+These are available in commands or overlays when using `{{...}}` syntax:
+
+Common:
+- {{username}} — person who triggered the event
+- {{message}} — message sent (chat, redemption, etc.)
+- {{timestamp}} — event time
+- {{platform}} — twitch, youtube, etc.
+- {{avatar}} — profile image URL
+
+Special:
+- {{userLevelsRaw}} — object of roles (mod, vip, sub, etc.)
+
+Use inside code like:
+
+```js
+const levels = await getVariable('userLevelsRaw');
+if (levels.subscriber) { ... }
+```
+
+-------------------------------------------------
+Core Overlay Hooks
+-------------------------------------------------
+
+window.DATA
+  → All values from Configs & Data tabs.
+
+window.CODE_ID
+  → Unique ID for scoping `custom.overlay-content` events.
+
+window.addEventListener('onEventReceived', (ev) => {...})
+  → Master event handler. Always check `ev.detail.type`.
+
+-------------------------------------------------
+Event Types & Payloads
+-------------------------------------------------
+
+1. alert.chat
+-------------
+Triggered on chat message (e.g., Twitch, YouTube)
+
+Payload:
+{
+  "type": "alert.chat",
+  "data": {
+    "origin": "twitch",
+    "info": {
+      "username": "LumiaDev",
+      "message": "Hello world!",
+      "avatar": "https://...",
+      "color": "#00FF7F",
+      "badges": [...],
+      "userLevels": {
+        "mod": true,
+        "subscriber": true,
+        ...
+      }
+    }
+  }
+}
+
+2. alert.event
+--------------
+All standard alerts like follows, subs, tips
+
+Payload:
+{
+  "type": "alert.event",
+  "data": {
+    "alert": {
+      "alert": "twitch-subscriber",
+      "extraSettings": {
+        "username": "LumiaDev",
+        "avatar": "https://...",
+        "site": "twitch",
+        "message": "You rock!",
+        "duration": 4000
+      }
+    }
+  }
+}
+
+3. custom.overlay-content
+-------------------------
+Manually sent content from command:
+
+Command Code:
+```js
+await overlaySendCustomContent({
+  codeId: "my-widget",
+  content: "Triggered by {{username}}"
+});
+```
+
+Overlay Handler:
+```js
+if (type === 'custom.overlay-content' && data.codeId === CODE_ID) {
+  const msg = data.content;
+}
+```
+
+4. alert.hfx
+------------
+Fired when HFX triggers
+
+Payload:
+{
+  "type": "alert.hfx",
+  "data": {
+    "layer": "fx-layer",
+    "content": "UUID",
+    "username": "LumiaDev",
+    "message": "💥",
+    "duration": 6000
+  }
+}
+
+5. light.virtual
+----------------
+Triggered by Virtual Light actions
+
+Payload:
+{
+  "type": "light.virtual",
+  "data": {
+    "uuid": "1234",
+    "color": { "r": 255, "g": 0, "b": 0 },
+    "brightness": 100
+  }
+}
+
+-------------------------------------------------
+Available Events to Listen To
+-------------------------------------------------
+In overlay "Configs" tab → multiselect `events`:
+
+- alert.chat
+- alert.event
+- alert.hfx
+- light.virtual
+- custom.overlay-content (always available)
+
+-------------------------------------------------
+Helper Functions (Overlay + Command Use)
+-------------------------------------------------
+
+- overlaySendCustomContent({ codeId, content })
+- setVariable({ name, value })
+- getVariable(name)
+- delay(ms)
+- playAudio({ path, volume })
+- tts({ message, voice, volume })
+- chatbot({ message, site })
+- overlaySetTextContent({ layer, content })
+- overlaySetImageContent({ layer, content })
+- overlaySetVisibility({ overlay, on })
+- overlaySetLayerVisibility({ layer, on })
+- overlayShoutout({ layer, clipType, clipRandom, ... })
+
+Use these to fully control overlays from custom code.
+
+-------------------------------------------------
+Example Overlay Startup JS
+-------------------------------------------------
+```js
+const CODE_ID = window.CODE_ID || 'mycode';
+const configs = window.DATA || {};
+
+window.addEventListener('onEventReceived', (ev) => {
+  const type = ev.detail?.type;
+  const data = ev.detail?.data;
+
+  if (type === 'alert.chat') {
+    const user = data.info.username;
+    const msg = data.info.message;
+    console.log(`${user}: ${msg}`);
+  }
+});
+```
+
+-------------------------------------------------
+Best Practices
+-------------------------------------------------
+- Use unique `CODE_ID` per widget.
+- Only listen to needed events for efficiency.
+- Use `textContent` or sanitize when inserting user input.
+- Use Configs tab for user-tweakable settings.
+- Persist counters/timers using localStorage.
+- Always call `done()` in Custom Code commands.
+
+-------------------------------------------------
+Possible Keys within `data` (per Event Type)
+-------------------------------------------------
+
+1. alert.chat
+-------------
+Keys within data.info:
+- id: Unique message ID
+- username: "User123"
+- displayname: "User123"
+- channel: "#channel"
+- avatar: Image URL
+- message: Raw chat message
+- color: Hex color (e.g., "#00FF7F")
+- badges: Array of badge image URLs
+- badgesRaw: e.g. "broadcaster/1,sub/12"
+- emotesRaw: Raw emote string from chat
+- emotesPack: Object of emotes parsed
+- reply: Optional reply context
+- lumiauserlevels: Array of numeric user level codes
+- userLevels: Object
+    - isSelf: boolean
+    - mod: boolean
+    - vip: boolean
+    - tier3, tier2, tier1: boolean
+    - subscriber: boolean
+    - regular: boolean
+    - follower: boolean
+    - anyone: boolean
+
+2. alert.event
+--------------
+Keys within data.alert:
+- alert: "twitch-subscriber", "youtube-superchat", etc.
+- dynamic:
+    - value: dynamic string or number (e.g., gifted sub count)
+- extraSettings:
+    - username: "User123"
+    - displayname: "User123"
+    - userId: number (platform user ID)
+    - avatar: Image URL (or null)
+    - timestamp: ISO time string
+    - site: "twitch", "youtube", etc.
+    - checkTimingType: boolean
+    - timingType: e.g., "duration", "default"
+    - duration: Number in milliseconds
+
+3. alert.hfx
+------------
+Keys within data:
+- layer: The HFX layer name
+- content: UUID of HFX asset
+- command: Source command
+- origin: "hudfx", "command", etc.
+- playAudio: boolean
+- volume: 0–1 float
+- duration: Milliseconds
+- username: Who triggered
+- message: Message sent (chat or command)
+- avatar: User avatar
+- commandDuration: Same as duration
+
+4. light.virtual
+----------------
+Keys within data:
+- uuid: ID of virtual light
+- brightness: 0–100
+- color: Object with r/g/b ints (0–255)
+- transition: ms (transition duration)
+- delay: ms (delay before triggering)
+- duration: ms (total effect duration)
+
+5. custom.overlay-content
+-------------------------
+Keys within data:
+- codeId: Target CODE_ID for overlay
+- content: String or JSON object you pass
+
+Example sending JSON string:
+```js
+await overlaySendCustomContent({
+  codeId: 'calculator',
+  content: JSON.stringify({ type: "add", value: 3 })
+});
+```
+
+Inside overlay:
+```js
+const content = JSON.parse(ev.detail.data.content);
+```
+
+-------------------------------------------------
+Example: Twitch Gifted Sub Event
+-------------------------------------------------
+Payload:
+{
+  "type": "alert.event",
+  "data": {
+    "alert": {
+      "alert": "twitch-giftSubscription",
+      "dynamic": {
+        "value": 5
+      },
+      "extraSettings": {
+        "username": "GifterUser",
+        "displayname": "GifterUser",
+        "userId": 123456,
+        "avatar": "https://...",
+        "timestamp": "2025-06-28T18:40:00Z",
+        "site": "twitch",
+        "duration": 5000
+      }
+    }
+  }
+}
