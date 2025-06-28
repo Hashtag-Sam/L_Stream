@@ -1,0 +1,353 @@
+🧩 Custom Overlay Layer
+This layer is a real-time, configurable overlay component with support for dynamic events. It includes five main tabs:
+
+HTML – Defines the static layout of the UI
+CSS – Custom styling rules
+JS – Handles real-time logic and event listeners
+Configs – Input schema used to customize the component
+Data – Holds the actual values for the defined fields
+Chat GPT Lumia Overlay Assistant
+We offer a Chat GPT Lumia overlay assistant that can help you with your custom overlay creation. Ask it a question like Create an overlay that changes color every time a new chat command comes in. It knows our documentation and can help out a ton
+
+Access it here: Chat GPT Lumia Overlay Assistant
+
+🖼️ HTML Tab
+Defines the layout of the overlay visible to users:
+
+1<div style="padding:1em; font-family:sans-serif;">
+2    <h3 id="msg">Waiting for data…</h3>
+3    <h4>Data:</h4>
+4    <div id="data"></div>
+5</div>
+🎨 CSS Tab
+Customize the visual style of your overlay:
+
+1#msg {
+2    font-weight: bold;
+3    color: #ff3b88;
+4}
+🧠 JS Tab
+Javascript handles initialization and real-time event updates for your overlay:
+
+1// CODE_ID is used to filter the custom.overlay-content to ignore data intended for other custom code from Lumia Stream
+2const CODE_ID = window.CODE_ID || 'mycode';
+3const configs = window.DATA || {};
+4document.getElementById('msg').textContent = 'Got configs: ' + JSON.stringify(configs);
+5
+6window.addEventListener('onEventReceived', (ev) => {
+7    const type = ev.detail.type;
+8    const payload = ev.detail.data;
+9    document.getElementById('data').innerHTML += `<p>${type}: ${JSON.stringify(payload)}</p>`;
+10
+11    // Check for codeId when the type is custom.overlay-content
+12    if (type === 'custom.overlay-content') {
+13        console.log('This is for my code');
+14    }
+15});
+What This Does
+Displays the initial configs data provided via window.DATA
+Appends incoming events to the screen in real time
+📡 Event Handling
+Only events selected in the "Events to listen to" multiselect will be received by the overlay.
+
+Example Event
+If an event with type alert.chat is dispatched:
+
+1window.addEventListener('onEventReceived', (ev) => {
+2    const type = ev.detail.type;
+3    const payload = ev.detail.data;
+4});
+📋 Configs Tab
+The Configs fields define what users can customize in the layer. They appear on the right-hand side of the UI under the Configuration section unless a field is marked hidden: true.
+
+A field object can now contain up to five useful properties:
+
+Property	Required	Purpose	Example
+type	✅	UI control to render. Must be one of the FieldType enum values (input, number, checkbox, dropdown, multiselect, colorpicker).	"type": "dropdown"
+label	✅	Human-readable name shown in the sidebar.	"label": "Favorite Color:"
+value	❌	Default value that appears the first time the user opens the overlay (also pre populates window.DATA). Omit it to leave the field blank/unchecked on first load.	"value": 18
+options	☑️*	Key value map of selectable choices. Required only for dropdown and multiselect; ignored for other types.	"options": { "twitch": "Twitch", "youtube": "YouTube" }
+visibleIf	❌	Conditional render rule. Field is shown only if window.DATA[visibleIf.key] strictly equals one of the values in visibleIf.equals.	"visibleIf": { "key": "targetKey", "equals": ["yes", "maybe"] }
+hidden	❌	Hard-hide rule. When set to true, the field is never displayed in the Configs sidebar, preventing end users from altering it. The value still flows into window.DATA, so the overlay can rely on it internally.
+Useful for locking event subscriptions or other advanced settings.	"hidden": true
+🔑 Keys vs. Field Objects
+Before looking at the individual properties (type, label, value, options), remember that the JSON key itself is critical:
+
+1{
+2    "age": {
+3        /* field object */
+4    },
+5    "platform": {
+6        /* field object */
+7    }
+8}
+Concept	What it is	Where it shows up
+Key ("age", "platform", …)	The property name that wraps a field object	Becomes window.DATA.age, window.DATA.platform, etc. — this is what your JS code reads & writes
+Label ("Age:", "Platform:")	UI text shown in the sidebar next to the control	Only visible to the user; never appears in window.DATA
+Rule of thumb: Choose short, machine-friendly keys (no spaces, camelCase is fine). Use labels for anything human-readable.
+
+Supported Field Types
+type	UI Control
+"input"	Single-line text box
+"number"	Numeric input spinner
+"checkbox"	Checkbox selection
+"dropdown"	Select menu
+"multiselect"	Multi-select box
+"colorpicker"	Color picker widget
+Sample Config fields
+1{
+2    "txt": {
+3        "type": "input",
+4        "label": "Name:"
+5    },
+6    "last": {
+7        "type": "input",
+8        "label": "Last Name:",
+9        "value": "Abc"
+10    },
+11    "partner": {
+12        "type": "checkbox",
+13        "label": "Partner:",
+14        "value": false
+15    },
+16    "age": {
+17        "type": "number",
+18        "label": "Age:",
+19        "value": 18
+20    },
+21    "color": {
+22        "type": "colorpicker",
+23        "label": "Favorite Color:"
+24    },
+25    "subcolor": {
+26        "type": "colorpicker",
+27        "label": "Sub-color:",
+28        "visibleIf": {
+29            "key": "color",
+30            "equals": "blue"
+31        }
+32    },
+33    "platform": {
+34        "type": "dropdown",
+35        "label": "Platform:",
+36        "options": {
+37            "twitch": "Twitch",
+38            "youtube": "Youtube",
+39            "kick": "Kick"
+40        }
+41    },
+42    "events": {
+43        "type": "multiselect",
+44        "label": "Events to listen to:",
+45        "hidden": true,
+46        "options": {
+47            "alert.chat": "Chat messages",
+48            "alert.event": "Alerts",
+49            "light.virtual": "Virtual lights",
+50            "alert.hfx": "HFX"
+51        }
+52    }
+53}
+Visible If Conditional Fields
+The visibleIf field is a conditional statement that determines whether a field should be visible or not based on a condition. The visibleIf field is a JSON object with two keys: key and equals.
+
+The key key is a string that represents the name of the field whose value should be used in the conditional statement. The equals key is a string, number, boolean, or an array that represents the value of the field whose value should be used in the conditional statement.
+
+Single Prmitive Equals Example
+1{
+2    "hasAlerts": {
+3        "type": "checkbox",
+4        "label": "Show alerts"
+5    },
+6    "title": {
+7        "type": "input",
+8        "label": "Title",
+9        "visibleIf": {
+10            "key": "hasAlerts",
+11            "equals": true
+12        }
+13    }
+14}
+Multiple Prmitive Equals Example
+1{
+2    "color": {
+3        "type": "input",
+4        "label": "Colors"
+5    },
+6    "subcolor": {
+7        "type": "input",
+8        "label": "Subcolors",
+9        "visibleIf": {
+10            "key": "color",
+11            "equals": ["red", "blue", "green"]
+12        }
+13    }
+14}
+🧩 Events Multiselect
+The events field is a multiselect input, typically rendered as a list of checkboxes or a dropdown. It allows users to select which event types the overlay should listen to.
+
+Available Events Options
+Value	Label
+alert.hfx	HFX
+alert.chat	Chat messages
+alert.event	Alerts
+light.virtual	Virtual lights
+💡 Performance Tip: Only the selected events will be delivered to the overlay. Unselected event types are ignored, improving efficiency. 💡 The typescript types for each alert is down below: under Event Types 💡 There is another default event that all custom overlays are automatically subscribed to. This is the custom.overlay-content event. This is a special event that allows you to send custom content to the overlay from Lumia Stream and will only send to your specific codeId.
+
+📊 Data Tab
+The data fields are the current values that the user has selected. These can have default values by adding them in to the initial Data Tab. This data is passed to your Javascript code that can be accessed under window.DATA.
+
+✅ Use Cases
+Custom stream overlays for Twitch, YouTube, or other platforms
+Real-time dashboards for alerts and interactions
+Interactive visuals triggered by chat or external events
+📤 Sending Data from Lumia Stream
+Lumia Stream allows you to send data from your application to the overlay. This can be used to allow communication from Lumia Stream without needing variables. The way to do this is through either the Send Custom Overlay Content Overlay action or by using the overlaySendCustomContent action in your Custom Javascript code within a command. When using Send Custom Overlay Content Overlay action or overlaySendCustomContent it is required that you include the codeId otherwise there is no way the overlay will receive your content. The overlay will always only send to custom overlay layers with your codeId. An example of this would be in a command custom javascript code send:
+
+1async function() {
+2  overlaySendCustomContent({ codeId: "mycode", content: '{"type": "add", "value": "{{username}} - {{message}}"' });
+3
+4  // Make sure you call done() to avoid memory leaks
+5  done();
+6}
+Then in your Custom Overlay JS Tab you would listen to it and parse it with:
+
+1const CODE_ID = window.CODE_ID || 'mycode';
+2const configs = window.DATA || {};
+3
+4window.addEventListener('onEventReceived', (ev) => {
+5    const type = ev.detail.type;
+6    const payload = ev.detail.data;
+7
+8    if (type === 'custom.overlay-content') {
+9        const content = JSON.parse(payload.content);
+10        console.log('This is for my code', content);
+11    }
+12});
+Persisting Data
+The recommended way to persist data by using localStorage. This way your data is contained within your overlays and doesn't rely on Lumia Stream's variables to store data that only is targeted to this specific Custom Overlay.
+
+1const CODE_ID = 'counter';
+2const countEl = document.getElementById('count');
+3let counter = Number(localStorage.getItem(CODE_ID)) || 0;
+4render();
+5
+6/* --- helper -----------------------------------------------------*/
+7function render() {
+8    countEl.textContent = counter;
+9    localStorage.setItem(CODE_ID, counter); // persist
+10}
+11
+12/* --- listen only to chat ---------------------------------------*/
+13window.addEventListener('onEventReceived', (ev) => {
+14    if (ev.detail?.type !== 'alert.chat') return;
+15
+16    const msg = ev.detail.data?.info?.message?.trim().toLowerCase();
+17    const user = ev.detail.data?.info?.username ?? 'Someone';
+18    if (msg === '!count') {
+19        counter++;
+20        render();
+21    }
+22});
+Using JS Game Engines
+Our Overlays will work with various Game Engines including, but not limited to Phaser.js, Pixi.js, Three.js, and more.
+
+🧪 Tips
+Use the Events multiselect to limit which events trigger updates—great for debugging or focus.
+Always sanitize HTML content if displaying user-generated input.
+Leverage custom CSS to match your stream or brand style.
+Always use Code ID in your code when you need data from Lumia Stream outside of variables
+In the window.addEventListener always use if (type === intendedType) so that you do not get data and events that you do not need.
+In custom code or overlay actions prefer to send data directly to the overlay without the store or variables if you do not need to persist the data
+Event Types
+1export interface AlertChatEvent {
+2    type: 'alert.chat';
+3    data: {
+4        origin: string; // "twitch" | "kick" | …
+5        info: {
+6            id: string;
+7            username: string;
+8            displayname: string;
+9            channel: string; // "#channel"
+10            avatar: string; // URL
+11            message: string; // full chat line
+12            color: string; // hex string, e.g. "#00FF7F"
+13            badges: string[]; // badge image URLs
+14            badgesRaw: string; // e.g. "broadcaster/1,sub/12"
+15            emotesRaw: string;
+16            emotesPack: Record<string, unknown>;
+17            reply: unknown | null; // null if not a reply
+18            lumiauserlevels: number[]; // The number value of userLevels
+19            userLevels: {
+20                isSelf: boolean;
+21                mod: boolean;
+22                vip: boolean;
+23                tier3: boolean;
+24                tier2: boolean;
+25                subscriber: boolean;
+26                regular: boolean;
+27                follower: boolean;
+28                anyone: boolean;
+29            };
+30        };
+31    };
+32}
+33
+34export interface AlertEventEvent {
+35    type: 'alert.event';
+36    data: {
+37        type: 'alert';
+38        alert: {
+39            alert: string;
+40            dynamic: {
+41                value: number | string;
+42            };
+43            extraSettings: {
+44                username: string;
+45                displayname: string;
+46                userId: number;
+47                avatar: string | null;
+48                timestamp: string;
+49                site: string; // "kick" | "twitch" | …
+50                checkTimingType: boolean;
+51                timingType: string;
+52                duration: number;
+53            };
+54            fromLumia: boolean; // true if internally generated
+55        };
+56    };
+57}
+58
+59export interface LightVirtualEvent {
+60    type: 'light.virtual';
+61    data: {
+62        uuid: string;
+63        brightness: number; // 0-100
+64        color: { r: number; g: number; b: number };
+65        transition: number; // ms
+66        delay: number; // ms
+67        duration: number; // ms
+68    };
+69}
+70
+71export interface AlertHfxEvent {
+72    type: 'alert.hfx';
+73    data: {
+74        layer: string;
+75        content: string; // UUID of the HFX asset
+76        command: string;
+77        origin: string; // "hudfx" | "command" | …
+78        playAudio: boolean;
+79        volume: number; // 0-1
+80        duration: number; // asset length (ms)
+81        username: string;
+82        message: string;
+83        avatar: string; // URL
+84        commandDuration: number; // same as duration
+85    };
+86}
+📦 Templates
+You can get started quickly with one of the two built-in templates:
+
+Custom Chatbox – A base template for building a chatbox overlay that listens to messages.
+Custom Alert – A template for creating a fully custom alert layer that responds to selected events.
