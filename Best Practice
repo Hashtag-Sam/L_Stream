@@ -1,0 +1,5374 @@
+Alerts.ts
+/// <reference path="./custom-overlays.d.ts" />
+
+import { LumiaAlertValues } from './custom-overlays';
+
+/* -------------------------------------------------------------------------- */
+/*  Utility + shared pieces                                                  */
+/* -------------------------------------------------------------------------- */
+
+/** Known platforms (extendable). */
+type Platform = 'twitch' | 'youtube' | 'kick' | 'tiktok' | 'facebook' | 'trovo' | string;
+
+/** ISO-8601 timestamp branding for better editor hints. */
+type ISODateString = string & { __iso8601: true };
+
+/**
+ * Timing metadata for alerts.
+ * - `checkTimingType: false` → no timing info
+ * - `timingType: "duration"` → show for a number of milliseconds
+ * - `timingType: "cycle"` → show for a number of cycles (app-defined)
+ */
+type Timing = { checkTimingType: false } | { checkTimingType: true; timingType: 'duration'; duration: number } | { checkTimingType: true; timingType: 'cycle'; cycles: number };
+
+/**
+ * Common fields many alerts include.
+ * These are merged into each alert’s `extraSettings`.
+ */
+interface CommonExtras {
+	/** Origin site/platform for this alert (e.g., "twitch"). */
+	site: Platform;
+	/** ISO-8601 timestamp when the alert originated. */
+	timestamp: ISODateString;
+
+	/** Username on the origin platform (if available). */
+	username?: string;
+	/** Display name on the origin platform (if available). */
+	displayname?: string;
+	/** User ID on the origin platform (string or number). */
+	userId?: string | number;
+	/** Avatar URL (nullable if not provided). */
+	avatar?: string | null;
+}
+
+/**
+ * Canonical base alert shape used by all specific alerts.
+ * `dynamic` is narrowed automatically when `alert` is a specific discriminator.
+ */
+interface BaseAlert<T extends LumiaAlertValues, D extends object, E extends object> {
+	/** Discriminant – use values from LumiaAlertValues (e.g., "twitch-subscriber"). */
+	alert: T;
+	/** Alert payload that varies by alert type (narrowed via `alert`). */
+	dynamic: D;
+	/**
+	 * Extra settings – alert-specific fields merged with shared `CommonExtras` and `Timing`.
+	 * Do NOT duplicate CommonExtras fields in specialisations unless they truly differ.
+	 */
+	extraSettings: E & CommonExtras & Timing;
+	/**
+	 * Whether this alert originated from Lumia’s internal pipeline.
+	 * Kept as boolean to make testing/mocking easier.
+	 */
+	fromLumia: boolean;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Per-alert specialisations                                                */
+/* -------------------------------------------------------------------------- */
+
+/** New follower on Twitch. */
+type TwitchFollower = BaseAlert<
+	LumiaAlertValues.TWITCH_FOLLOWER,
+	Record<string, never>,
+	{
+		/** Channel view count (at time of alert). */
+		channelViews: number;
+		/** Channel description text. */
+		channelDescription: string;
+	}
+>;
+
+/** Incoming raid on Twitch. */
+type TwitchRaid = BaseAlert<
+	LumiaAlertValues.TWITCH_RAID,
+	{
+		/** Raid size / viewer count. */
+		value: number;
+		/** Raider username (convenience duplicate). */
+		username: string;
+	},
+	{
+		/** Viewers included in the raid (vendor field). */
+		viewers: number;
+		/** Optional expanded channel description. */
+		channelDescription: string | null;
+		/** Avatar URL for raider. */
+		avatar: string;
+		/** Channel views for raider. */
+		channelViews: number;
+		/** Optional display message from the raider. */
+		message?: string | null;
+	}
+>;
+
+/** Cheer/Bits on Twitch (including PowerUps also modeled separately). */
+type TwitchBits = BaseAlert<
+	LumiaAlertValues.TWITCH_BITS,
+	{
+		/** Canonical numeric value of the contribution. */
+		value: number;
+		/** Cheer username. */
+		username: string;
+	},
+	{
+		/** Bits reported by vendor. */
+		bits: number;
+		/** Amount reported by vendor (kept for parity). */
+		amount: number;
+		/** Optional message accompanying the cheer. */
+		message: string | null;
+		/** Raw message string from the platform. */
+		rawMessage: string;
+		/** Full message (Lumia-computed, if present). */
+		full_message: string;
+		/** Channel views at time of alert. */
+		channelViews: number;
+		/** Channel description text. */
+		channelDescription: string | null;
+	}
+>;
+
+/** Subscription event on Twitch (sub, resub, gift). */
+type TwitchSubscriber = BaseAlert<
+	LumiaAlertValues.TWITCH_SUBSCRIBER,
+	| {
+			/** Tier value for sub/resub ("1000" | "2000" | "3000"). */
+			value: '1000' | '2000' | '3000';
+			/** Subscriber username. */
+			username: string;
+			/** Total months subbed. */
+			subMonths: number;
+			/** Current streak months. */
+			streakMonths: number;
+			/** Whether this is a Prime sub. */
+			isPrime: boolean;
+	  }
+	| {
+			/** Tier value for gifted sub. */
+			value: '1000' | '2000' | '3000';
+			/** Gifter username. */
+			username: string;
+			/** Recipient months (vendor value; may be present). */
+			subMonths: number;
+			/** Number of subs gifted in this event. */
+			giftAmount: number;
+			/** Cumulative gifted subs by this gifter. */
+			totalGifts: number;
+			/** Gift indicator. */
+			isGift: true;
+			/** Whether the gifter is anonymous. */
+			isAnon?: boolean;
+			/** Whether this event is Prime (rare for gifts). */
+			isPrime: boolean;
+			/** Whether this is a resub gift. */
+			isResub: boolean;
+	  },
+	{
+		/** Tier name ("Tier 1", "Tier 2", "Tier 3"). */
+		subPlanName: string;
+		/** Tier code ("1000" | "2000" | "3000"). */
+		subPlan: string;
+		/** Tier value duplicate for convenience. */
+		value: '1000' | '2000' | '3000';
+		/** Optional display/sticker message. */
+		message: string | null;
+		/** Gifter username, if applicable. */
+		gifter?: string;
+		/** Recipient username, if applicable. */
+		recipient?: string;
+		/** Comma-separated recipients (mass gift). */
+		recipients?: string;
+		/** Streak months (duplicated in dynamic for normal/resub). */
+		streakMonths?: number;
+		/** Gift bundle size (duplicated) */
+		giftAmount?: number;
+		/** Cumulative gift count by gifter. */
+		totalGifts?: number;
+		/** String tier (e.g., "Prime", "1000"). */
+		tier: string;
+	}
+>;
+
+/** Twitch PowerUps (bits-based effects). */
+type TwitchPowerup = BaseAlert<
+	LumiaAlertValues.TWITCH_POWERUPS,
+	{
+		/** Human-friendly name of the PowerUp. */
+		name: string;
+		/** Canonical numeric value (e.g., bits). */
+		value: number;
+		/** Username who triggered the PowerUp. */
+		username: string;
+	},
+	{
+		/** Bits reported by vendor. */
+		bits: number;
+		/** Vendor-provided type string. */
+		type: string;
+		/** Vendor amount (mirrors value). */
+		amount: number;
+		/** Raw chat message, if present. */
+		rawMessage: string | null;
+		/** Full message (Lumia-computed), if present. */
+		full_message: string | null;
+		/** Channel views at time of alert. */
+		channelViews: number;
+		/** Channel description text. */
+		channelDescription: string | null;
+	}
+>;
+
+/** Twitch Extension monetization / points. */
+type TwitchExtension = BaseAlert<
+	LumiaAlertValues.TWITCH_EXTENSION,
+	{
+		/** Redeemer username. */
+		username: string;
+		/** Item/extension name. */
+		name: string;
+		/** Currency type for the extension. */
+		currency: 'points' | 'bits';
+	},
+	{
+		/** Bits-based amount (when applicable). */
+		bits: number;
+		/** Numeric amount (points or bits). */
+		amount: number;
+		/** Origin tag for the event. */
+		origin: 'twitch-extension';
+		/** Command invoked within the extension. */
+		command: string;
+		/** Command identifier. */
+		command_id: string;
+		/** Message text (extension-defined). */
+		message: string;
+		/** Currency string echo. */
+		currency: 'points' | 'bits';
+		/** Amount type echo. */
+		amount_type: 'points' | 'bits';
+		/** Currency symbol (if applicable). */
+		currencySymbol: string;
+		/** Platform is always "twitch" for this alert. */
+		platform: 'twitch';
+		/** Channel views at time of alert (string|number to match vendor inconsistencies). */
+		channelViews: string | number;
+		/** Full message (Lumia-computed), if present. */
+		full_message: string;
+		/** Channel description text. */
+		channelDescription: string;
+	}
+>;
+
+/** Tiltify campaign donation. */
+type TiltifyDonation = BaseAlert<
+	LumiaAlertValues.TILTIFY_DONATION,
+	{
+		/** Canonical numeric donation amount. */
+		value: number;
+		/** ISO currency code (e.g., "USD"). */
+		currency: string;
+	},
+	{
+		/** Raw amount string as provided by vendor. */
+		amount: string;
+		/** Optional donor message. */
+		message: string | null;
+	}
+>;
+
+/** New follower on Kick. */
+type KickFollower = BaseAlert<
+	LumiaAlertValues.KICK_FOLLOWER,
+	{
+		/** Usually an empty string; keep for parity. */
+		value: string;
+	},
+	{
+		/** Nullable avatar URL. */
+		avatar: string | null;
+	}
+>;
+
+/** Kick channel “Points” (custom loyalty on Kick). */
+type KickPoints = BaseAlert<
+	LumiaAlertValues.KICK_POINTS,
+	{
+		/** Numeric points value used for this redemption. */
+		value: number;
+		/** Command/name of the points trigger. */
+		name: string;
+		/** Currency discriminator for points. */
+		currency: 'points';
+	},
+	{
+		/** Display title for the points command. */
+		title: string;
+		/** Echo of numeric value as string. */
+		value: string;
+		/** Amount as number (same as numeric value). */
+		amount: number;
+		/** Origin tag for the event. */
+		origin: 'kick-points';
+		/** Points value (duplicate). */
+		points: number;
+		/** Optional prompt text associated with the command. */
+		prompt: string | null;
+		/** The Kick command triggered. */
+		command: string;
+		/** Raw chat message (if present). */
+		message: string | null;
+		/** Platform discriminator. */
+		platform: 'kick';
+		/** Raw message (not parsed). */
+		rawMessage: string | null;
+		/** Amount type echo. */
+		amount_type: 'points';
+		/** Currency symbol (if set). */
+		currencySymbol: string;
+		/** Raw user levels map. */
+		userLevelsRaw: {
+			mod: boolean;
+			vip: boolean;
+			isSelf: boolean;
+			follower: boolean;
+			subscriber: boolean;
+		};
+		/** Lumia internal user levels. */
+		lumiauserlevels: number[];
+	}
+>;
+
+/** TikTok gift (coins/diamonds). */
+type TikTokGift = BaseAlert<
+	LumiaAlertValues.TIKTOK_GIFT,
+	{
+		/** Gift display name. */
+		name: string;
+		/** Canonical numeric value for this gift event. */
+		value: number;
+	},
+	{
+		/** TikTok coins value. */
+		coins: number;
+		/** Same as value (vendor echo). */
+		value: number;
+		/** Gift numeric ID. */
+		giftId: number;
+		/** Sender user ID. */
+		userId: string;
+		/** Gift description. */
+		describe: string;
+		/** Gift name (echo). */
+		giftName: string;
+		/** TikTok gift type code. */
+		giftType: number;
+		/** Sender username. */
+		username: string;
+		/** Whether repeat animation ended. */
+		repeatEnd: boolean;
+		/** Repeat count. */
+		repeatCount: number;
+		/** Diamonds for the gift. */
+		diamondCount: number;
+		/** URL of the gift picture. */
+		giftPictureUrl: string;
+		/** Receiver user ID, if applicable. */
+		receiverUserId: string;
+		/** Sender avatar URL. */
+		profilePictureUrl: string;
+		/** Sender display name. */
+		displayname: string;
+		/** Whether this is a new gifter. */
+		isNewGifter: boolean;
+	}
+>;
+
+/** New subscriber on YouTube. */
+type YouTubeSubscriber = BaseAlert<
+	LumiaAlertValues.YOUTUBE_SUBSCRIBER,
+	{
+		/** Usually an empty string; keep for parity. */
+		value: string;
+	},
+	Record<string, never>
+>;
+
+/** YouTube SuperSticker. */
+type YouTubeSuperSticker = BaseAlert<
+	LumiaAlertValues.YOUTUBE_SUPERSTICKER,
+	{
+		/** Canonical numeric value of the sticker purchase. */
+		value: number;
+	},
+	{
+		/** Amount numeric (duplicate). */
+		amount: number;
+	}
+>;
+
+/** YouTube SuperChat. */
+type YouTubeSuperChat = BaseAlert<
+	LumiaAlertValues.YOUTUBE_SUPERCHAT,
+	{
+		/** Canonical numeric value for the SuperChat. */
+		value: number;
+		/** ISO currency code (e.g., "USD"). */
+		currency: string;
+		/** SuperChatter username. */
+		username: string;
+	},
+	{
+		/** Numeric amount (duplicate). */
+		amount: number;
+		/** Currency code (duplicate). */
+		currency: string;
+		/** Convenience duplicate of value for some toolchains. */
+		value: number;
+	}
+>;
+
+/** YouTube channel membership (join/renew). */
+type YouTubeMember = BaseAlert<
+	LumiaAlertValues.YOUTUBE_MEMBER,
+	{
+		/** Usually an empty string; keep for parity. */
+		value: string;
+	},
+	Record<string, never>
+>;
+
+/** Crowd Control effect fired (for supported platforms). */
+type CrowdControlEffect = BaseAlert<
+	LumiaAlertValues.CROWDCONTROL_EFFECT,
+	{
+		/** Raw value (effect identifier or label). */
+		value: string;
+	},
+	{
+		/** Game name. */
+		game: string;
+		/** Effect label. */
+		effect: string;
+		/** Game ID (vendor). */
+		gameId: string;
+		/** Artwork URL for game/effect. */
+		artwork: string;
+		/** Optional message. */
+		message: string;
+		/** Effect ID. */
+		effectId: string;
+		/** Platform running the effect. */
+		platform: 'twitch' | 'youtube' | 'kick';
+		/** Duration in milliseconds. */
+		duration: number;
+	}
+>;
+
+/* -------------------------------------------------------------------------- */
+/*  All alerts together                                                      */
+/* -------------------------------------------------------------------------- */
+
+/** Discriminated union of all supported alerts. */
+export type LumiaAlert =
+	| TwitchFollower
+	| TwitchRaid
+	| TwitchBits
+	| TwitchSubscriber
+	| TwitchPowerup
+	| TwitchExtension
+	| TiltifyDonation
+	| KickFollower
+	| KickPoints
+	| TikTokGift
+	| YouTubeSubscriber
+	| YouTubeSuperSticker
+	| YouTubeSuperChat
+	| YouTubeMember
+	| CrowdControlEffect;
+
+/**
+ * Map from alert discriminator to its concrete alert type.
+ * Useful for generic helpers and editor navigation.
+ */
+export interface AlertMap {
+	[LumiaAlertValues.TWITCH_FOLLOWER]: TwitchFollower;
+	[LumiaAlertValues.TWITCH_RAID]: TwitchRaid;
+	[LumiaAlertValues.TWITCH_BITS]: TwitchBits;
+	[LumiaAlertValues.TWITCH_SUBSCRIBER]: TwitchSubscriber;
+	[LumiaAlertValues.TWITCH_POWERUPS]: TwitchPowerup;
+	[LumiaAlertValues.TWITCH_EXTENSION]: TwitchExtension;
+	[LumiaAlertValues.TILTIFY_DONATION]: TiltifyDonation;
+	[LumiaAlertValues.KICK_FOLLOWER]: KickFollower;
+	[LumiaAlertValues.KICK_POINTS]: KickPoints;
+	[LumiaAlertValues.TIKTOK_GIFT]: TikTokGift;
+	[LumiaAlertValues.YOUTUBE_SUBSCRIBER]: YouTubeSubscriber;
+	[LumiaAlertValues.YOUTUBE_SUPERSTICKER]: YouTubeSuperSticker;
+	[LumiaAlertValues.YOUTUBE_SUPERCHAT]: YouTubeSuperChat;
+	[LumiaAlertValues.YOUTUBE_MEMBER]: YouTubeMember;
+	[LumiaAlertValues.CROWDCONTROL_EFFECT]: CrowdControlEffect;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Helpers – for dev ergonomics                                             */
+/* -------------------------------------------------------------------------- */
+
+/** "twitch-subscriber" | "kick-points" | ... (all alert discriminants). */
+export type AlertType = LumiaAlert['alert'];
+
+/** Dynamic payload for a specific alert type. */
+export type AlertDynamic<T extends AlertType> = AlertMap[T]['dynamic'];
+
+/** Extra settings (merged with CommonExtras & Timing) for a specific alert type. */
+export type AlertExtra<T extends AlertType> = AlertMap[T]['extraSettings'];
+
+cheatsheet.md
+# Lumia Stream Custom Overlay – Assistant Training Kit
+
+---
+
+## 1. API Cheat‑Sheet (one line per member)
+
+### `window.Overlay` interface
+
+| Signature                                                                                                               | Purpose                                                               |     |
+| ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | --- |
+| `on(event: 'chat'\|'alert'\|'hfx'\|'virtuallight'\|'overlaycontent', handler: (ev: CustomEvent<OverlayEvent>) => void)` | Subscribe to real‑time overlay events.                                |     |
+| `callCommand(command: string, extraSettings?: Record<string,string \| number>): void`                                   | Trigger a Lumia Stream command, optionally passing local variables.   |     |
+| `chatbot({ message, platform?, chatAsSelf? }): Promise<void>`                                                           | Send a chat message as the bot or streamer on the chosen platform(s). |     |
+| `addLoyaltyPoints({ value, username, platform }): Promise<number>`                                                      | Add or subtract loyalty points for a user and get the new balance.    |     |
+| `getLoyaltyPoints({ username, platform }): Promise<number>`                                                             | Retrieve a user's current loyalty‑points total.                       |     |
+| `setVariable(name: string, value: unknown): void`                                                                       | Create or update a global Lumia variable.                             |     |
+| `getVariable(name: string): unknown`                                                                                    | Read a global Lumia variable (**must be a string literal key**).      |     |
+| `saveStorage(key: string, value: string): void`                                                                         | Persist data scoped to this overlay’s `codeId`.                       |     |
+| `getStorage(key: string): string`                                                                                       | Load a value previously saved with `saveStorage`.                     |     |
+| `removeStorage(key: string): void`                                                                                      | Delete a saved storage item.                                          |     |
+
+**Global helpers**
+
+`toast(message: string, type?: 'info'\|'success'\|'warning'\|'error')` • `log(...args)` (alias of `console.log`)
+
+### Overlay events & payload helpers
+
+```js
+type OverlayListener = 'chat' | 'alert' | 'hfx' | 'virtuallight' | 'overlaycontent';
+interface ChatEvent {
+	username: string;
+	message: string /* … */;
+}
+interface AlertEvent {
+	alert: LumiaAlertValues;
+	dynamic: { value: number | string } /* … */;
+}
+// hfx, virtuallight, overlaycontent follow similar shapes – see typings for full details.
+```
+
+## 2. Generic Alert Helpers
+
+```js
+interface BaseAlert<A extends string,D,E> {
+  alert: A;            // discriminant
+  dynamic: D;          // event‑specific mutable numbers/strings
+  extraSettings: E & Timing & { site:string; timestamp:string };
+  fromLumia: true;
+}
+
+// Convenience helpers:
+//   type AlertDynamic<'twitch-subscriber'> = { … }
+//   type AlertExtra<'twitch-subscriber'>  = { … }
+```
+
+Include these two helper aliases in your embeddings so the model can quickly map `alert` → concrete `dynamic` / `extraSettings`.
+
+## 3. JSON Schema – Configs Tab
+
+```json
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"title": "Custom Overlay Configs",
+	"type": "object",
+	"patternProperties": {
+		"^[a-zA-Z0-9_-]+$": {
+			"type": "object",
+			"required": ["type", "label"],
+			"properties": {
+				"type": {
+					"enum": ["input", "number", "checkbox", "dropdown", "multiselect", "colorpicker", "fontpicker", "slider"]
+				},
+				"label": { "type": "string" },
+				"value": {},
+				"options": {
+					"type": ["object", "array"],
+					"nullable": true,
+					"properties": {
+						"step": { "type": ["number", "integer"] },
+						"min": { "type": ["number", "integer"] },
+						"max": { "type": ["number", "integer"] },
+						"prefix": { "type": "string" },
+						"suffix": { "type": "string" }
+					},
+					"additionalProperties": true
+				},
+				"order": { "type": "integer" },
+				"placeholder": { "type": "string" },
+				"enableVariables": { "type": "boolean" },
+				"allowedVariables": { "type": "array", "items": { "type": "string" } },
+				"min": { "type": "number" },
+				"max": { "type": "number" },
+				"visibleIf": {
+					"type": "object",
+					"required": ["key", "equals"],
+					"properties": {
+						"key": { "type": "string" },
+						"equals": {}
+					}
+				},
+				"hidden": { "type": "boolean" }
+			},
+			"additionalProperties": false
+		}
+	},
+	"additionalProperties": false
+}
+```
+
+## 4. Config Examples
+
+### Variable‑enabled text input
+
+```json
+{
+	"title": {
+		"type": "input",
+		"label": "Title",
+		"enableVariables": true,
+		"allowedVariables": ["username", "message"],
+		"placeholder": "Enter title or insert variables"
+	}
+}
+```
+
+### Slider
+
+```json
+{
+	"fontSize": {
+		"type": "slider",
+		"label": "Font Size:",
+		"options": { "step": 10, "min": 0, "max": 200, "prefix": "", "suffix": "px" },
+		"value": 40
+	}
+}
+```
+
+## 5. Behavioural Examples
+
+### Variable‑enabled Config Input
+
+```json
+{
+  "title": {
+    "type": "input",
+    "label": "Title",
+    "enableVariables": true,
+    "allowedVariables": ["username", "message"],
+    "placeholder": "Enter title or insert variables"
+  }
+}
+```
+
+### Positive – Chat listener
+
+```js
+Overlay.on('chat', (ev) => {
+	const { username, message } = ev.detail;
+	toast(`${username}: ${message}`);
+});
+```
+
+### Negative → Fixed – Static variable keys
+
+```js
+// ❌ Wrong – variable key is not a string literal; model cannot statically extract it
+const key = 'score';
+Overlay.getVariable(key);
+
+// ✅ Correct
+Overlay.getVariable('score');
+```
+
+### Positive – Chatbot helper
+
+```js
+Overlay.chatbot({ message: 'My message' });
+```
+
+### Negative → Fixed – Chatbot call signature
+
+```js
+// ❌ Wrong – chatbot takes an object
+Overlay.chatbot('This message');
+
+// ✅ Correct
+Overlay.chatbot({ message: 'This message' });
+```
+
+### Positive – Alert listener using `data.alert`
+
+```js
+Overlay.on('alert', (data) => {
+	const alert = data.alert;
+	const message = data.extraSettings?.message || '';
+
+	/* Bits */
+	if (alert === 'twitch-bits' && cfg.allowBits) {
+		const bits = data.dynamic.value ?? 0;
+		if (bits >= (cfg.minBits ?? 1)) {
+			processCommands(message);
+		}
+		return;
+	}
+
+	/* Twitch Channel Points */
+	if (alert === 'twitch-points' && cfg.allowTwitchPoints) {
+		const trig = cfg.twitchPointsCommand?.toLowerCase() || '';
+		const content = message.toLowerCase();
+		if (!trig || trig === data.extraSettings.command) processCommands(content);
+		return;
+	}
+
+	/* Kick Points */
+	if (alert === 'kick-points' && cfg.allowKickPoints) {
+		const trig = cfg.kickPointsCommand?.toLowerCase() || '';
+		const content = message.toLowerCase();
+		if (!trig || trig === data.extraSettings.command) processCommands(content);
+		return;
+	}
+});
+```
+
+### Negative → Fixed – Using `type` and `platform` (avoid)
+
+```js
+// ❌ Wrong – 'type' and 'platform' are not reliable for differentiating alerts
+Overlay.on('alert', (a) => {
+	const type = (a.type || '').toLowerCase();
+	const plat = (a.platform || '').toLowerCase();
+
+	/* Bits */
+	if (cfg.allowBits && (type === 'bits' || type === 'cheer')) {
+		const bits = a.value ?? a.amount ?? a.bits ?? 0;
+		if (bits >= (cfg.minBits ?? 1)) {
+			processCommands(a.message || a.meta?.message || '');
+		}
+		return;
+	}
+
+	/* Twitch Channel Points */
+	if (cfg.allowTwitchPoints && type === 'points' && plat === 'twitch') {
+		const trig = cfg.twitchPointsCommand?.toLowerCase() || '';
+		const content = (a.message || a.meta?.message || '').toLowerCase();
+		if (!trig || content.includes(trig)) processCommands(content);
+		return;
+	}
+
+	/* Kick Points */
+	if (cfg.allowKickPoints && type === 'points' && plat === 'kick') {
+		const trig = cfg.kickPointsCommand?.toLowerCase() || '';
+		const content = (a.message || a.meta?.message || '').toLowerCase();
+		if (!trig || content.includes(trig)) processCommands(content);
+	}
+});
+```
+
+### Positive – User‑level check
+
+```js
+// ✅ Correct – concise moderator/self check
+const isModOrBroad = evt.userLevels?.mod || evt.userLevels?.isSelf;
+```
+
+### Negative → Fixed – Verbose user‑level check
+
+```js
+// ❌ Wrong – unnecessary extra properties that aren't present on all platforms
+const isModOrBroad = evt.userLevels?.mod || evt.userLevels?.broadcaster || evt.userLevels?.owner;
+```
+
+documentation.md
+# 🧩 Custom Overlay Layer
+
+This layer is a real-time, configurable overlay component with support for dynamic events. It includes five main tabs:
+
+-   **HTML** – Defines the static layout of the UI
+-   **CSS** – Custom styling rules
+-   **JS** – Handles real-time logic and event listeners
+-   **Configs** – Input schema used to customize the component
+-   **Data** – Holds the actual values for the defined fields
+
+## Chat GPT Lumia Overlay Assistant
+
+We offer a Chat GPT Lumia overlay assistant that can help you with your custom overlay creation.
+Ask it a question like Create an overlay that changes color every time a new chat command comes in.
+It knows our documentation and can help out a ton
+
+Access it here: [Chat GPT Lumia Overlay Assistant](https://chatgpt.com/g/g-6760d2a59b048191b17812250884971b-lumia-custom-overlays-assistant)
+
+---
+
+## 🖼️ HTML Tab
+
+Defines the layout of the overlay visible to users:
+
+```html
+<div style="padding:1em; font-family:sans-serif;">
+	<h3 id="msg">Waiting for data…</h3>
+	<h4>Data:</h4>
+	<div id="data"></div>
+	<!-- You can use variables directly within HTML -->
+	<div>{{myvar}}</div>
+</div>
+```
+
+---
+
+## 🎨 CSS Tab
+
+Customize the visual style of your overlay:
+
+```css
+#msg {
+	font-weight: bold;
+	/* You can use variables directly within CSS */
+	color: '{{mycolor}}';
+}
+```
+
+---
+
+## 🧠 JS Tab
+
+Javascript handles initialization and real-time event updates for your overlay:
+
+```js
+// window.Overlay is our primary api, you can use it with window.Overlay or just Overlay
+
+// Overlay.data contains he data that's submitted from the user using your overlay that they're allowed to fill out based on the fields in the config tab
+console.log(Overlay.data);
+
+// Call a command in Lumia Stream and pass variables for the command to use. In the command you can reference {{secret}} since that's what we're passing in
+Overlay.callCommand('mycommand', { secret: 'password' });
+
+// Send a chatbot message to the corresponding platform either as the streamer or the bot. Leave the platform as null to trigger on all connected platforms
+Overlay.chatbot({ message: 'This works', platform: 'twitch', chatAsSelf: false  });
+
+// Add Loyalty Points for a user, also returns the new updated points value
+const points = await Overlay.addLoyaltyPoints({ value: 100, username: 'lumiastream', platform: 'twitch' });
+// Or if you don't care about the response
+Overlay.addLoyaltyPoints({ value: 100, username: 'lumiastream', platform: 'twitch' });
+// You can also subtract points
+Overlay.addLoyaltyPoints({ value: -100, username: 'lumiastream', platform: 'twitch' })
+
+// Gets the amount of loyalty points that a user has
+const usersPoints = await Overlay.getLoyaltyPoints({ username: 'lumiastream', platform: 'twitch' });
+
+// If the variables isn't already created it will create one.
+await Overlay.setVariable('myvar', 'this works');
+
+// Retrieves a variable, always use a string for getVariable, do not use a reference to a string so that the code can extract out the variables it needs to listen to
+await Overlay.getVariable('myvar');
+
+// If the variable was not previously created it may not automatically be replaced in your code until after the code is saved and reopened. If the overlay was previously made then it will update immediately. It may be helpful to add a check in your code to see if variable is already auto updating or not and toast the user to refresh the overlay
+const usedMyVar = "{{myvar}}";
+
+// You can call await without an async function since an async function is already wrapped around all the JS code
+
+// Save an item to storage
+await Overlay.saveStorage('mydata', 151);
+
+// Get an item from stoage
+const pokemonCaught = await Overlay.getStorage('mydata');
+
+// Delete an item from stoage
+await Overlay.deleteStorage('mydata');
+
+Overlay.on('chat', (data) => {
+	const username = data.username;
+	const avatar = data.avatar;
+	const message = data.message;
+	toast(`New chat message received from ${username}. They said ${message}`);
+});
+Overlay.on('alert', (data) => {
+	console.log('alert', data);
+	const settings = data.extraSettings;
+	const username = settings?.username || 'unknown';
+	const amount = data.dynamic.value;
+	const avatar = settings?.avatar;
+
+	if (data.alert === 'twitch-subscriber') {
+		if (data.dynamic.isGift) {
+			console.log(`${username} sent ${data.dynamic.giftAmount} with a tier ${settings.subPlan} sub to ${settings.recipients ?? settings.recipient}`);
+		} else if (data.dynamic.isResub) {
+			console.log(`${username} shared their ${settings.subPlan} sub. They've been subscribed for ${data.dynamic.subMonths} months`);
+		} else {
+			console.log(`${username} subscribed with a tier ${settings.subPlan} sub`);
+		}
+	}
+
+	if (data.alert === 'twitch-raid') {
+		console.log(`${username} just raided with ${data.dynamic.value} viewers`);
+	}
+
+	if (data.alert === 'kick-follower') {
+		console.log(`${username} just followed on Kick`);
+	}
+});
+Overlay.on('hfx', (data) => {
+	const username = data.username;
+	const command = data.command;
+	const message = data.message; // If the HFX was triggered with a message
+	const avatar = data.avatar;
+
+	console.log(`${username} just triggered HFX ${command}`);
+});
+Overlay.on('virtuallight', (data) => {
+	console.log('virtuallight', data);
+	const viratlLightId = data.uuid;
+	const brightness = data.brightness;
+
+	// Power sometimes does not come through if the light is just changing colors
+	if (data.color && (data.power || data.power === 'undefined')) {
+		const { r, g, b} = data.color;
+		console.log(`Light is changing to the color to rgb(${r},${g},${b})`);
+	} else if (data.power === false) {
+		console.log(`Light is turning off`);
+	}
+	const
+});
+// Only codeId that matches on both Overlays and Lumia will trigger this listener. codeId can only contain letters, numbers, hyphens, and underscores. Max 25 characters.
+Overlay.on('overlaycontent', (data) => {
+	const content = data.content;
+	console.log(`Content has been sent from Lumia Stream ${content}`);
+});
+```
+
+We wrap all the code in an async function, so you can use await in your root level of the code without wrapping it in an async funtion. This example will have no problem
+
+```js
+const variable = await Overlay.getStorage('mykey');
+console.log(variable);
+```
+
+### What This Does
+
+-   Displays the initial data provided via `Overlay.data`
+-   Accepts incoming events in real time
+
+### 📡 Event Handling
+
+Use the `Overlay.on` to listen to events
+
+### Example Event
+
+If an event with type `chat` is dispatched and you have Overlay.on('chat') within your code it will send it to that listener
+
+```js
+Overlay.on('chat', (data) => {
+	console.log('chat', data);
+});
+Overlay.on('alert', (data) => {
+	console.log('alert', data);
+});
+Overlay.on('hfx', (data) => {
+	console.log('hfx', data);
+});
+Overlay.on('virtuallight', (data) => {
+	console.log('virtuallight', data);
+});
+Overlay.on('overlaycontent', (data) => {
+	console.log('overlaycontent', data);
+});
+```
+
+When using Overlay.on the data tab must have the corresponding OverlayListener types:
+
+### OverlayListener types
+
+| Value          | Label                  |
+| -------------- | ---------------------- |
+| chat           | Chat messages          |
+| alert          | Alerts                 |
+| hfx            | HFX                    |
+| virtuallight   | Virtual lights         |
+| overlaycontent | Custom Overlay Content |
+
+> 💡 Performance Tip: Only the selected events will be delivered to the overlay.
+> 💡 The typescript types for each alert is within the types tab
+> 💡 `overlaycontent` is a default event that will always be on for all custom overlays that are automatically subscribed to whether it's in the data tab or not. This is a special event that allows you to send custom content to the overlay from Lumia Stream and will only send to your specific codeId.
+
+### Showing Toasts
+
+You can display toast notifications and log messages using the following:
+
+```js
+toast('Message');
+
+// Or you can pass in the type of toast to show
+toast('Message', 'info');
+toast('Message', 'success');
+toast('Message', 'warning');
+toast('Message', 'error');
+```
+
+### Showing Logs in console
+
+You can display log information in your console
+
+```js
+console.log('Message');
+```
+
+### Calling Commands in Lumia Stream using the Overlay
+
+We expose an api that allows you to call a chat command and update variables
+
+This can be used under `Overlay.callCommand`
+
+```js
+Overlay.callCommand('caught');
+
+// Or you can pass local variables to your command as well that will only be used for this instance. This will not be a global variable
+Overlay.callCommand('caught', { username: 'lumia', pokemon: 'lugia', shiny: true });
+```
+
+### Setting/Updating Global Variables in Lumia Stream
+
+We expose an api that allows you to set a variable within Lumia Stream that can be used to save data to Lumia Stream and show it within commands, chatbots, or even other Overlay Layers.
+
+We pull in varaibles dynamically so that overlays that are not using variables will not need to get the data for variables that it does not care about. This means that if you create a brand new variable within an overlay you may need to save and refresh so that it updates to pull in the new variable. But after the variable is created it will dynamically change.
+
+This can be used under `Overlay.setVariable`
+
+```js
+Overlay.setVariable('pokemon_caught', 151);
+```
+
+### Using Persistent Storage in Lumia Stream
+
+We expose an api that allows you to get, update, and delete storage tied to your `codeId`. This will persist across Lumia Stream and can be used to communicate with your overlays in any place: OBS, Browser, Meld, etc. It works different than localStorage where localStorage only saves for the browser / streaming studio. If you would like to persist data this is the recommended way other than using it with variables. The only issue is that actual Lumia Stream does not have access to this storage currently. Only your Overlays will have access
+
+This can be used under `Overlay.saveStorage`, `Overlay.getStorage`, `Overlay.deleteStorage`
+
+```js
+// Save an item to storage
+await Overlay.saveStorage('pokemon_caught', 151);
+
+// Get an item from stoage
+const pokemonCaught = await Overlay.getStorage('pokemon_caught');
+
+// Delete an item from stoage
+await Overlay.deleteStorage('pokemon_caught');
+```
+
+### Data Storage Options in Custom Overlays
+
+When building custom overlays, you have several options for storing and sharing data. Each method has its own use cases, benefits, and limitations:
+
+#### 1. `localStorage`
+
+-   **Scope:** Only available in the browser where the overlay is loaded (e.g., OBS, browser source, or streaming studio).
+-   **Persistence:** Data persists across page reloads in the same browser, but is not shared between different browsers or devices.
+-   **Use Case:** Storing user preferences or temporary data that doesn't need to sync across devices or overlays.
+-   **Limitations:** Not accessible by Lumia Stream itself or other overlays running elsewhere.
+
+#### 2. **Lumia Stream Variables**
+
+-   **Scope:** Global within Lumia Stream. Variables can be accessed and updated by overlays, chatbots, commands, and other Lumia features.
+-   **Persistence:** Saved on the server and available across all overlays and sessions.
+-   **Use Case:** Sharing data between overlays, commands, and chatbots, or persisting state across restarts.
+-   **Limitations:** All variables are global—be careful with naming to avoid conflicts.
+
+#### 3. `Overlay.callCommand`
+
+-   **Scope:** Triggers a Lumia Stream command, optionally passing custom data.
+-   **Persistence:** Depends on your command logic. You can implement your own storage or logic inside the command.
+-   **Use Case:** Advanced workflows where you want to process data or trigger actions in Lumia Stream, possibly updating variables or storage as part of the command.
+-   **Limitations:** Requires custom command setup in Lumia Stream.
+
+#### 4. `Overlay.saveStorage` / `getStorage` / `deleteStorage`
+
+-   **Scope:** Persistent storage tied to your overlay's `codeId`. Data is saved on the local Lumia Stream server and is accessible from any overlay instance (e.g., OBS, browser, Meld) running on the same server.
+-   **Persistence:** Data persists across overlay reloads and is shared between all overlay clients connected to the same Lumia Stream instance.
+-   **Use Case:** Storing overlay-specific state or data that needs to be shared between multiple overlay clients or sessions.
+-   **Limitations:**
+    -   Not accessible by Lumia Stream commands or chatbots (only overlays can read/write).
+    -   Not synced to the cloud or between different Lumia Stream servers.
+
+#### Summary Table
+
+| Method                     | Scope/Access                | Persistence     | Accessible By      | Best For                                  |
+| -------------------------- | --------------------------- | --------------- | ------------------ | ----------------------------------------- |
+| `localStorage`             | Per browser/tab             | Browser reloads | Overlay only       | User preferences, local state             |
+| Lumia Stream Variables     | Global (Lumia Stream)       | Server-wide     | Overlays, commands | Shared/global state, cross-feature access |
+| `Overlay.callCommand`      | Custom (via command logic)  | Custom          | Overlay & commands | Advanced workflows, custom logic          |
+| `Overlay.saveStorage` etc. | Per overlay `codeId`/server | Server (local)  | Overlays only      | Overlay-specific persistent data          |
+
+> **Tip:** Choose the storage method that best fits your data's scope and persistence needs. For most overlay-to-overlay communication, use variables or `saveStorage`. For global state, prefer variables. For overlay-local state, use `localStorage` or `saveStorage`.
+
+---
+
+## 📋 Configs Tab
+
+The Configs fields define what users can customize in the layer.
+They appear on the right-hand side of the UI under the `Configuration` section unless a field is marked `hidden: true`.
+
+A field object can now contain these properties:
+
+| Property        | Required | Purpose                                                                                                                                                                                                                                                                                            | Example                                                           |
+| --------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| **`type`**      | ✅       | UI control to render. Must be one of the `FieldType` enum values (`input`, `number`, `checkbox`, `dropdown`, `multiselect`, `colorpicker`, `fontpicker`, `slider`).                                                                                                                                | `"type": "dropdown"`                                              |
+| **`label`**     | ✅       | Human-readable name shown in the sidebar.                                                                                                                                                                                                                                                          | `"label": "Favorite Color:"`                                      |
+| **`value`**     | ❌       | Default value that appears the first time the user opens the overlay (also pre populates `Overlay.data`). Omit it to leave the field blank/unchecked on first load.                                                                                                                                | `"value": 18`                                                     |
+| **`options`**   | ☑️\*     | Key value map of selectable choices. Required **only** for `dropdown`, `multiselect` and `slider`; ignored for other types. For `slider`, `options` supports `step`, `min`, `max`, `prefix`, `suffix`.                                                                                             | `"options": { "step": 5, "min": 0, "max": 100 }`                  |
+| **`order`**     | ❌       | **Display order priority**. Fields with lower numbers appear first. Fields without `order` appear after ordered fields, sorted alphabetically by key.                                                                                                                                              | `"order": 1`                                                      |
+| **`visibleIf`** | ❌       | **Conditional render rule**. Field is shown **only if** `Overlay.data[visibleIf.key]` strictly equals one of the values in `visibleIf.equals`.                                                                                                                                                     | `"visibleIf": { "key": "targetKey", "equals": ["yes", "maybe"] }` |
+| **`hidden`**    | ❌       | **Hard-hide rule.** When set to `true`, the field is **never displayed** in the Configs sidebar, preventing end users from altering it. The value still flows into `Overlay.data`, so the overlay can rely on it internally.<br>Useful for locking event subscriptions or other advanced settings. | `"hidden": true`                                                  |
+
+Additional properties for text inputs (`type: "input"`):
+
+| Property               | Required | Purpose                                                                                                                                    | Example                                       |
+| ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------- |
+| **`placeholder`**      | ❌       | Placeholder text inside the input.                                                                                                         | `"placeholder": "Enter title..."`             |
+| **`enableVariables`**  | ❌       | When `true`, renders a variable-enabled input that lets users insert variables (e.g., `{{username}}`) from a picker.                       | `"enableVariables": true`                     |
+| **`allowedVariables`** | ❌       | When present with `enableVariables: true`, limits the top of the picker to this list. System/function variables are still available below. | `"allowedVariables": ["username", "message"]` |
+
+### Variable-enabled Input Fields
+
+You can enable Lumia variables directly in text inputs by setting `enableVariables: true`. Optionally provide `allowedVariables` to surface a curated list first, and `placeholder` for UX.
+
+Example:
+
+```json
+{
+	"title": {
+		"type": "input",
+		"label": "Title",
+		"enableVariables": true,
+		"allowedVariables": ["username", "message"],
+		"placeholder": "Enter title or insert variables"
+	}
+}
+```
+
+Clicking the `{}` adornment opens the variables panel. Selecting an item inserts it at the cursor as `{{variable_name}}`.
+
+### 🔑 Keys vs. Field Objects
+
+Before looking at the individual properties (type, label, value, options), remember that the JSON key itself is critical:
+
+```jsonc
+{
+	"age": {
+		/* field object */
+	},
+	"platform": {
+		/* field object */
+	}
+}
+```
+
+| Concept                             | What it is                                       | Where it shows up                                                                                    |
+| ----------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| **Key** (`"age"`, `"platform"`, …)  | The property name that wraps a field object      | Becomes `Overlay.data.age`, `Overlay.data.platform`, etc. — this is what your JS code reads & writes |
+| **Label** (`"Age:"`, `"Platform:"`) | UI text shown in the sidebar next to the control | **Only** visible to the user; never appears in `Overlay.data`                                        |
+
+> Rule of thumb: Choose short, machine-friendly keys (no spaces, camelCase is fine). Use labels for anything human-readable.
+
+### Supported Field Types
+
+| type            | UI Control            |
+| --------------- | --------------------- |
+| `"input"`       | Single-line text box  |
+| `"number"`      | Numeric input spinner |
+| `"checkbox"`    | Checkbox selection    |
+| `"dropdown"`    | Select menu           |
+| `"multiselect"` | Multi-select box      |
+| `"colorpicker"` | Color picker widget   |
+| `"fontpicker"`  | Font picker (Google)  |
+| `"slider"`      | Number slider         |
+
+### Font Picker
+
+The font picker type will load Google fonts on the fly that allows a user to select their font. Just make sure you use the variable in the CSS.
+
+Example:
+
+Configs Tab
+
+```json
+{
+	"font": {
+		"type": "fontpicker",
+		"label": "Font"
+	}
+}
+```
+
+Data Tab
+
+```json
+{
+	"font": "Impact"
+}
+```
+
+Css Tab
+
+```css
+body {
+	font-family: '{{font}}';
+}
+```
+
+The key in the json an ddata must match the variable name used in the css
+
+> Note we're using variable replacement within the css.
+
+### Field Display Order
+
+By default, config fields are displayed in alphabetical order by their key names. You can override this behavior using the `order` property:
+
+-   Fields with an `order` property are displayed first, sorted by their order value (ascending)
+-   Fields without an `order` property appear after all ordered fields, sorted alphabetically by key
+-   This allows you to prioritize important settings at the top of the configuration panel
+
+#### Order Example
+
+```json
+{
+	"showStartupMessage": {
+		"order": 1,
+		"type": "checkbox",
+		"label": "Send a chatbot help message when the overlay loads",
+		"value": true
+	},
+	"allowModCommands": {
+		"order": 2,
+		"type": "checkbox",
+		"label": "Enable moderator runtime commands",
+		"value": true
+	},
+	"backgroundColor": {
+		"type": "colorpicker",
+		"label": "Background Color"
+	},
+	"textColor": {
+		"type": "colorpicker",
+		"label": "Text Color"
+	},
+	"font": {
+		"type": "fontpicker",
+		"label": "Font"
+	}
+}
+```
+
+In this example, the fields would appear in this order:
+
+1. `showStartupMessage` (order: 1)
+2. `allowModCommands` (order: 2)
+3. `backgroundColor` (no order, alphabetically first)
+4. `textColor` (no order, alphabetically second)
+
+### Sample Config fields
+
+```json
+{
+	"name": {
+		"order": 1,
+		"type": "input",
+		"label": "Name:"
+	},
+	"last": {
+		"order": 2,
+		"type": "input",
+		"label": "Last Name:",
+		"value": "Abc"
+	},
+	"partner": {
+		"order": 3,
+		"type": "checkbox",
+		"label": "Partner:",
+		"value": false
+	},
+	"age": {
+		"order": 4,
+		"type": "number",
+		"label": "Age:",
+		"min": 0,
+		"max": 100,
+		"value": 18
+	},
+	"color": {
+		"order": 5,
+		"type": "colorpicker",
+		"label": "Favorite Color:"
+	},
+	"subcolor": {
+		"order": 6,
+		"type": "colorpicker",
+		"label": "Sub-color:",
+		"visibleIf": {
+			"key": "color",
+			"equals": "blue"
+		}
+	},
+	"platform": {
+		"order": 7,
+		"type": "dropdown",
+		"label": "Platform:",
+		"options": {
+			"twitch": "Twitch",
+			"youtube": "Youtube",
+			"kick": "Kick"
+		}
+	},
+	"multiplatforms": {
+		"order": 8,
+		"type": "multiselect",
+		"label": "Multi Streaming Platforms:",
+		"options": {
+			"twitch": "Twitch",
+			"youtube": "Youtube",
+			"kick": "Kick",
+			"tiktok": "Tiktok"
+		}
+	},
+	"font": {
+		"order": 9,
+		"type": "fontpicker",
+		"label": "Font:"
+	},
+	"fontSize": {
+		"order": 10,
+		"type": "slider",
+		"label": "Font Size:",
+		"options": {
+			"step": 10,
+			"min": 0,
+			"max": 200,
+			"prefix": "",
+			"suffix": "px"
+		}
+	}
+}
+```
+
+### Visible If Conditional Fields
+
+The `visibleIf` field is a conditional statement that determines whether a field should be visible or not based on a condition.
+The `visibleIf` field is a JSON object with two keys: `key` and `equals`.
+
+The `key` key is a string that represents the name of the field whose value should be used in the conditional statement.
+The `equals` key is a string, number, boolean, or an array that represents the value of the field whose value should be used in the conditional statement.
+
+#### Single Primitive Equals Example
+
+```json
+{
+	"hasAlerts": {
+		"type": "checkbox",
+		"label": "Show alerts"
+	},
+	"title": {
+		"type": "input",
+		"label": "Title",
+		"visibleIf": {
+			"key": "hasAlerts",
+			"equals": true
+		}
+	}
+}
+```
+
+#### Multiple Primitive Equals Example
+
+```json
+{
+	"color": {
+		"type": "input",
+		"label": "Colors"
+	},
+	"subcolor": {
+		"type": "input",
+		"label": "Subcolors",
+		"visibleIf": {
+			"key": "color",
+			"equals": ["red", "blue", "green"]
+		}
+	}
+}
+```
+
+---
+
+## 📊 Data Tab
+
+The `data` fields are the current values that the user has selected. These can have default values by adding them in to the initial Data Tab. This data is passed to your Javascript code that can be accessed under `Overlay.data`.
+
+Data Tab Example
+
+```json
+{
+	"userSelectedColor": "#FF00FF"
+}
+```
+
+Then in your JS Tab you can access the color with `Overlay.data.userSelectedColor`
+Or you can even just use it directly with variable replacement using double curly braces
+
+JS Tab
+
+```js
+const userColor = Overlay.data.userSelectedColor;
+console.log('User Color is', userColor);
+// Or use it with variable replacing
+const myUserColor = '{{userSelectedColor}}';
+```
+
+---
+
+## Code ID
+
+The codeId is primarily meant to be used when talking to Lumia Stream. It is used to store storage data, it is used when calling send overlay content that will only send to overlays with that specific code id. It can be retrieved within the overlay using `Overlay.on('overlaycontent', (data) => {...})`
+
+The codeId can only contain letters, numbers, hyphens, and underscores with a max of 25 characters.
+
+## ✅ Use Cases
+
+-   Custom stream overlays for Twitch, YouTube, or other platforms
+-   Real-time dashboards for alerts and interactions
+-   Interactive visuals triggered by chat or external events
+-   Pokemon Catching Mini Game
+-   Duel Overlay to show matches on stream with your viewers
+
+## Persisting Data
+
+The recommended way to persist data in your custom overlay is by using the provided `Overlay.saveStorage` and `Overlay.setVariable` methods. These allow you to store data that is scoped to your overlay's `codeId` and can be accessed across sessions, without relying on browser `localStorage` or global Lumia Stream variables.
+
+Here's an example using `Overlay.saveStorage` to persist a counter:
+
+```js
+const countEl = document.getElementById('count');
+let counter = 0;
+
+load();
+// We need an async function when loading since getStorage is asynchronous
+async function load() {
+	counter = await Overlay.getStorage('counter');
+	render();
+}
+
+/* --- helper -----------------------------------------------------*/
+async function render() {
+	countEl.textContent = counter;
+	await Overlay.saveStorage('counter', counter); // persist
+}
+
+/* --- listen only to chat ---------------------------------------*/
+Overlay.on('chat', (data) => {
+	const username = data.username;
+	const avatar = data.avatar;
+	const message = data.message;
+	if (message === '!count') {
+		counter++;
+		render();
+	}
+	toast(`New chat message received from ${username}. They said ${message}`);
+});
+```
+
+### Showing variables in your code
+
+You can display the value of a variable or storage item in your overlay by directly accessing it the same way as you would do in a chatbot message, using double curly braces `{{myvar}}`. We will replace the variable in your HTML, CSS, and JS every time the variable changes. Just make sure it's a variable that exist in Lumia when the overlay loads as it will only update variables that exist. If you need to create a variable dynamically, create it in the overlay but then prompt to reload after the initial load. You can check to see if the variable exists within JS.
+
+Variables can be used in these examples
+
+HTML Tab
+
+```html
+<div>{{myvar}}</div>
+```
+
+CSS Tab
+
+```css
+div {
+	color: {{myvarcolor}};
+}
+```
+
+JS Tab
+
+```js
+const myvar = '{{myvar}}';
+```
+
+### Using variables from data tab
+
+You can also use variables in the same way as Lumia variables from your data tab.
+
+So if you wanted to allow changing of your background color you would set it up like this:
+
+Configs Tab
+
+```json
+{
+	"background": {
+		"type": "input",
+		"label": "background",
+		"value": "blue"
+	}
+}
+```
+
+Data Tab
+
+```json
+{
+	"background": "blue"
+}
+```
+
+CSS Tab
+
+```css
+body {
+	background: {{background}};
+}
+```
+
+You can also use the same data variables in your JS, HTML, and CSS Tabs
+
+JS Tab
+
+```js
+const myBg = '{{background}}';
+```
+
+HTML Tab
+
+```html
+<div>User selected background {{background}}</div>
+```
+
+## 📤 Sending Data from Lumia Stream
+
+Lumia Stream allows you to send data from your application to the overlay. This can be used to allow communication from Lumia Stream without needing variables. The way to do this is through either the `Send Custom Overlay Content` Overlay action or by using the `overlaySendCustomContent` action in your Custom Javascript code within a command. When using `Send Custom Overlay Content` Overlay action or `overlaySendCustomContent` it is required that you include the `codeId` otherwise there is no way the overlay will receive your content. The overlay will always only send to custom overlay layers with your `codeId`. An example of this would be in a command custom javascript code send:
+
+```js
+async function() {
+  overlaySendCustomContent({ codeId: "mycode", content: '{"type": "add", "value": "{{username}} - {{message}}"' });
+
+  // Make sure you call done() to avoid memory leaks
+  done();
+}
+```
+
+Then in your Custom Overlay JS Tab you would listen to it and parse it with:
+
+```js
+Overlay.on('overlaycontent', (data) => {
+	const content = JSON.parse(data.content);
+	toast('This is for my code', content);
+});
+```
+
+## Using JS Game Engines
+
+Our Overlays will work with various Game Engines including, but not limited to Phaser.js, Pixi.js, Three.js, and more.
+
+## 🧪 Tips
+
+-   Always sanitize HTML content if displaying user-generated input.
+-   Leverage custom CSS to match your stream or brand style.
+-   In custom code or overlay actions prefer to send data directly to the overlay without the store or variables if you do not need to persist the data
+
+## 📦 Templates
+
+You can get started quickly with one of the two built-in templates:
+
+-   **Custom Chatbox** – A base template for building a chatbox overlay that listens to messages.
+-   **Custom Alert** – A template for creating a fully custom alert layer that responds to selected events.
+
+## Using API requests with Fetch
+
+You can 100% use fetch api requests from within Overlays to call any API you need.
+Here is an example:
+
+```js
+const url = `https://api.adviceslip.com/advice`;
+const slip = await fetch(url).then((r) => r.json());
+const advice = slip.slip?.advice || 'Take life one step at a time.';
+```
+
+overlays.ts
+// -----------------------------------------------------------------------------
+//  Lumia Stream - Custom Overlay typings
+// -----------------------------------------------------------------------------
+
+/**
+ * Available tabs in the custom overlay editor interface
+ */
+export enum CustomTabs {
+	/** HTML content tab */
+	HTML = 'html',
+	/** JavaScript code tab */
+	JS = 'js',
+	/** CSS styling tab */
+	CSS = 'css',
+	/** Configuration settings tab */
+	CONFIGS = 'configs',
+	/** Data storage tab */
+	DATA = 'data',
+}
+
+/**
+ * Field types available for the overlay configuration tab.
+ * These determine the UI controls shown for each config option.
+ */
+export enum ConfigsFieldType {
+	/** Text input field */
+	INPUT = 'input',
+	/** Numeric input field */
+	NUMBER = 'number',
+	// IMAGE = 'image',
+	/** Boolean checkbox */
+	CHECKBOX = 'checkbox',
+	/** Single-select dropdown menu */
+	DROPDOWN = 'dropdown',
+	/** Multi-select dropdown menu */
+	MULTISELECT = 'multiselect',
+	/** Color picker widget */
+	COLORPICKER = 'colorpicker',
+	/** Font selection widget */
+	FONTPICKER = 'fontpicker',
+	/** Number Slider widget */
+	SLIDER = 'slider',
+}
+
+/**
+ * Core event types that overlays can listen to.
+ * Used as discriminants for the overlay event system.
+ */
+export type OverlayListener = 'chat' | 'alert' | 'hfx' | 'virtuallight' | 'overlaycontent';
+
+/**
+ * Chat message event data structure.
+ * Fired when a chat message is received from any connected platform.
+ */
+export interface ChatEvent {
+	/** Platform origin (e.g., "twitch", "kick", "youtube", "tiktok") */
+	origin: string;
+	/** Unique message identifier */
+	id: string;
+	/** User's account username */
+	username: string;
+	/** User's display name (may differ from username) */
+	displayname: string;
+	/** Channel name where the message was sent */
+	channel: string;
+	/** URL to the user's avatar image */
+	avatar: string;
+	/** The chat message content */
+	message: string;
+	/** User's chat color as hex code (e.g., "#00FF7F") */
+	color: string;
+	/** Array of badge image URLs */
+	badges: string[];
+	/** Raw badge data string (e.g., "broadcaster/1,sub/12,vip/1") */
+	badgesRaw: string;
+	/** Raw emotes data string */
+	emotesRaw: string;
+	/** Emote pack data structure */
+	emotesPack: Record<string, unknown>;
+	/** Reply data if this message is a reply to another */
+	reply: unknown | null;
+	/** Lumia-specific user level identifiers */
+	lumiauserlevels: number[];
+	/** User permission levels and roles */
+	userLevels: {
+		/** Whether this is the streamer's own message */
+		isSelf: boolean;
+		/** Whether the user is a moderator */
+		mod: boolean;
+		/** Whether the user is a VIP */
+		vip: boolean;
+		/** Whether the user is a tier 3 subscriber */
+		tier3: boolean;
+		/** Whether the user is a tier 2 subscriber */
+		tier2: boolean;
+		/** Whether the user is a subscriber (any tier) */
+		subscriber: boolean;
+		/** Whether the user is a regular viewer */
+		regular: boolean;
+		/** Whether the user is a follower */
+		follower: boolean;
+		/** Always true - indicates any user level */
+		anyone: boolean;
+	};
+}
+
+/**
+ * Alert event data structure.
+ * Fired when stream alerts occur (follows, subs, donations, etc).
+ */
+export interface AlertEvent {
+	/** Type of alert from LumiaAlertValues enum */
+	alert: LumiaAlertValues;
+	/** Dynamic value associated with the alert (e.g., donation amount, sub months) */
+	dynamic: { value: number | string };
+	/** Additional metadata about the alert */
+	extraSettings: {
+		/** Username of the person triggering the alert */
+		username: string;
+		/** Display name of the person triggering the alert */
+		displayname: string;
+		/** User's unique identifier */
+		userId: number;
+		/** URL to the user's avatar image (if available) */
+		avatar: string | null;
+		/** ISO timestamp when the alert occurred */
+		timestamp: string;
+		/** Platform where the alert originated */
+		site: 'twitch' | 'kick' | 'youtube' | 'tiktok' | 'facebook' | 'trovo' | string;
+		/** Whether timing type should be checked */
+		checkTimingType: boolean;
+		/** Type of timing for the alert */
+		timingType: string;
+		/** Alert display duration in milliseconds */
+		duration: number;
+	};
+	/** Whether this alert was triggered from Lumia itself */
+	fromLumia: boolean;
+}
+
+/**
+ * HFX (Heads-up Effects) event data structure.
+ * Fired when visual/audio effects are triggered.
+ */
+export interface HfxEvent {
+	/** Effect layer identifier */
+	layer: string;
+	/** Asset UUID for the effect content */
+	content: string;
+	/** Command that triggered the effect */
+	command: string;
+	/** Origin of the effect (e.g., "hudfx", "command") */
+	origin: string;
+	/** Whether to play audio with the effect */
+	playAudio: boolean;
+	/** Audio volume (0-1 range) */
+	volume: number;
+	/** Effect duration in milliseconds */
+	duration: number;
+	/** Username of the person who triggered the effect */
+	username: string;
+	/** Associated message (if any) */
+	message: string;
+	/** URL to the user's avatar image */
+	avatar: string;
+	/** Command duration in milliseconds (usually same as duration) */
+	commandDuration: number;
+}
+
+/**
+ * Virtual light control event data structure.
+ * Fired when smart lights are controlled through Lumia.
+ */
+export interface VirtualLightEvent {
+	/** Unique identifier for the light */
+	uuid: string;
+	/** Brightness level (0-100) */
+	brightness: number;
+	/** RGB color values */
+	color: {
+		/** Red component (0-255) */
+		r: number;
+		/** Green component (0-255) */
+		g: number;
+		/** Blue component (0-255) */
+		b: number;
+	};
+	/** Power state (true = on, false = off) */
+	power?: boolean;
+	/** Transition time in milliseconds */
+	transition: number;
+	/** Delay before applying changes in milliseconds */
+	delay: number;
+	/** How long to maintain the state in milliseconds */
+	duration: number;
+}
+
+/**
+ * Custom overlay content event data structure.
+ * Used for sending custom data to specific overlays.
+ */
+export interface CustomOverlayContentEvent {
+	/** Identifier for the target overlay */
+	codeId: string;
+	/** Arbitrary JSON/string payload for the overlay */
+	content: string;
+}
+
+/**
+ * Union type of all possible overlay events
+ */
+export type OverlayEvent = ChatEvent | AlertEvent | HfxEvent | VirtualLightEvent | CustomOverlayContentEvent;
+
+/**
+ * Type definition for overlay event handlers.
+ * @example
+ * const handler: OverlayEventHandler = (ev) => {
+ *   console.log('Event received:', ev.detail);
+ * };
+ */
+export type OverlayEventHandler = (ev: CustomEvent<OverlayEvent>) => void;
+
+/**
+ * Main Overlay API interface.
+ * Available globally as `window.Overlay` in custom overlays.
+ */
+export interface Overlay {
+	/**
+	 * Register an event listener for chat messages
+	 * @param event - Event type "chat"
+	 * @param handler - Callback function to handle chat events
+	 * @example
+	 * window.Overlay.on('chat', (data) => {
+	 *   console.log(`${data.displayname}: ${data.message}`);
+	 * });
+	 */
+	on(event: 'chat', handler: (data: ChatEvent) => void): void;
+
+	/**
+	 * Register an event listener for alerts
+	 * @param event - Event type "alert"
+	 * @param handler - Callback function to handle alert events
+	 * @example
+	 * window.Overlay.on('alert', (data) => {
+	 *   if (data.alert === LumiaAlertValues.TWITCH_FOLLOWER) {
+	 *     console.log(`New follower: ${data.extraSettings.username}`);
+	 *   }
+	 * });
+	 */
+	on(event: 'alert', handler: (data: AlertEvent) => void): void;
+
+	/**
+	 * Register an event listener for HFX effects
+	 * @param event - Event type "hfx"
+	 * @param handler - Callback function to handle HFX events
+	 */
+	on(event: 'hfx', handler: (data: HfxEvent) => void): void;
+
+	/**
+	 * Register an event listener for virtual light controls
+	 * @param event - Event type "virtuallight"
+	 * @param handler - Callback function to handle virtual light events
+	 */
+	on(event: 'virtuallight', handler: (data: VirtualLightEvent) => void): void;
+
+	/**
+	 * Register an event listener for custom overlay content
+	 * @param event - Event type "overlaycontent"
+	 * @param handler - Callback function to handle custom content events
+	 */
+	on(event: 'overlaycontent', handler: (data: CustomOverlayContentEvent) => void): void;
+
+	/**
+	 * Execute a Lumia Stream command
+	 * @param command - Name of the command to execute
+	 * @param extraSettings - Optional parameters for the command
+	 * @example
+	 * window.Overlay.callCommand('lights-on', { brightness: 75 });
+	 */
+	callCommand(command: string, extraSettings?: Record<string, string | number>): void;
+
+	/**
+	 * Send a message to chat through the bot
+	 * @param args - Chat message configuration
+	 * @returns Promise that resolves when the message is sent
+	 * @example
+	 * await window.Overlay.chatbot({
+	 *   message: 'Thanks for the follow!',
+	 *   platform: 'twitch',
+	 *   chatAsSelf: false
+	 * });
+	 */
+	chatbot(args: {
+		/** The message to send */
+		message: string;
+		/** Target platform (optional) */
+		platform?: string;
+		/** Whether to send as the streamer (true) or bot (false) */
+		chatAsSelf?: boolean;
+	}): Promise<void>;
+
+	/**
+	 * Add loyalty points to a user
+	 * @param args - User and points configuration
+	 * @returns Promise resolving to the user's new total points
+	 * @example
+	 * const newTotal = await window.Overlay.addLoyaltyPoints({
+	 *   value: 100,
+	 *   username: 'viewer123',
+	 *   platform: 'twitch'
+	 * });
+	 */
+	addLoyaltyPoints(args: {
+		/** Number of points to add */
+		value: number;
+		/** Target username */
+		username: string;
+		/** User's platform */
+		platform: string;
+	}): Promise<number>;
+
+	/**
+	 * Get a user's current loyalty points balance
+	 * @param args - User identification
+	 * @returns Promise resolving to the user's current points
+	 * @example
+	 * const points = await window.Overlay.getLoyaltyPoints({
+	 *   username: 'viewer123',
+	 *   platform: 'twitch'
+	 * });
+	 */
+	getLoyaltyPoints(args: {
+		/** Target username */
+		username: string;
+		/** User's platform */
+		platform: string;
+	}): Promise<number>;
+
+	/**
+	 * Set a Lumia variable value
+	 * @param variable - Variable name
+	 * @param value - Value to set
+	 * @example
+	 * window.Overlay.setVariable('alertCount', 42);
+	 */
+	setVariable(variable: string, value: unknown): void;
+
+	/**
+	 * Get a Lumia variable value
+	 * @param variable - Variable name
+	 * @returns The variable value or undefined if not set
+	 * @example
+	 * const count = window.Overlay.getVariable('alertCount');
+	 */
+	getVariable(variable: string): unknown | undefined;
+
+	/**
+	 * Save data to browser local storage
+	 * @param key - Storage key
+	 * @param value - Value to store (will be stringified)
+	 * @example
+	 * window.Overlay.saveStorage('theme', 'dark');
+	 */
+	saveStorage(key: string, value: string): void;
+
+	/**
+	 * Retrieve data from browser local storage
+	 * @param key - Storage key
+	 * @returns The stored value or null if not found
+	 * @example
+	 * const theme = window.Overlay.getStorage('theme');
+	 */
+	getStorage(key: string): string | null;
+
+	/**
+	 * Remove data from browser local storage
+	 * @param key - Storage key to remove
+	 * @example
+	 * window.Overlay.removeStorage('theme');
+	 */
+	removeStorage(key: string): void;
+}
+
+// -----------------------------------------------------------------------------
+// Comprehensive enum of all Lumia alert types.
+// Used to identify specific events in AlertEvent.alert field.
+// -----------------------------------------------------------------------------
+
+// <auto-generated-start name="LumiaAlertValues" />
+export declare enum LumiaAlertValues {
+    /** Lumia Stream donation received */
+    LUMIASTREAM_DONATION = "lumiastream-donation",
+    /** Lumia application opened */
+    LUMIASTREAM_LUMIA_OPENED = "lumiastream-lumiaOpened",
+    /** Lumia application closed */
+    LUMIASTREAM_LUMIA_CLOSED = "lumiastream-lumiaClosed",
+    /** Stream mode activated */
+    LUMIASTREAM_STREAMMODE_ON = "lumiastream-streammodeOn",
+    /** Stream mode deactivated */
+    LUMIASTREAM_STREAMMODE_OFF = "lumiastream-streammodeOff",
+    /** Raffle started */
+    LUMIASTREAM_RAFFLE_START = "lumiastream-raffleStart",
+    /** Raffle stopped */
+    LUMIASTREAM_RAFFLE_STOP = "lumiastream-raffleStop",
+    /** Raffle winner selected */
+    LUMIASTREAM_RAFFLE_WINNER = "lumiastream-raffleWinner",
+    /** Spin wheel winner selected */
+    LUMIASTREAM_SPINWHEEL_WINNER = "lumiastream-spinwheelWinner",
+    /** Poll started */
+    LUMIASTREAM_POLL_STARTED = "lumiastream-pollStarted",
+    /** Poll progress update */
+    LUMIASTREAM_POLL_PROGRESSED = "lumiastream-pollProgressed",
+    /** Poll ended */
+    LUMIASTREAM_POLL_ENDED = "lumiastream-pollEnded",
+    /** Viewer queue started */
+    LUMIASTREAM_VIEWERQUEUE_STARTED = "lumiastream-viewerqueueStarted",
+    /** Viewer queue ended */
+    LUMIASTREAM_VIEWERQUEUE_ENDED = "lumiastream-viewerqueueEnded",
+    /** Roulette winner selected */
+    LUMIASTREAM_ROULETTE_WINNER = "lumiastream-rouletteWinner",
+    /** Slots winner */
+    LUMIASTREAM_SLOTS_WINNER = "lumiastream-slotsWinner",
+    /** Twitch extension interaction */
+    TWITCH_EXTENSION = "twitch-extension",
+    /** Twitch channel points redemption */
+    TWITCH_POINTS = "twitch-points",
+    /** Twitch stream went live */
+    TWITCH_STREAM_LIVE = "twitch-streamLive",
+    /** Twitch stream went offline */
+    TWITCH_STREAM_OFFLINE = "twitch-streamOffline",
+    /** First chat message in stream */
+    TWITCH_FIRST_CHATTER = "twitch-firstChatter",
+    /** User entered the stream */
+    TWITCH_ENTRANCE = "twitch-entrance",
+    /** New follower */
+    TWITCH_FOLLOWER = "twitch-follower",
+    /** Total Session followers count */
+    TWITCH_SESSION_FOLLOWERS = "twitch-sessionFollowers",
+    /** New subscription */
+    TWITCH_SUBSCRIBER = "twitch-subscriber",
+    /** Total Session subs count */
+    TWITCH_SESSION_SUBS = "twitch-sessionSubs",
+    /** Gift subscription given */
+    TWITCH_GIFT_SUBSCRIPTION = "twitch-giftSubscription",
+    /** Total Session gifts count */
+    TWITCH_SESSION_GIFT_SUBSCRIPTIONS = "twitch-sessionGiftSubscriptions",
+    /** Incoming raid */
+    TWITCH_RAID = "twitch-raid",
+    /** Outgoing raid */
+    TWITCH_RAID_OUT = "twitch-raidOut",
+    /** Bits cheered */
+    TWITCH_BITS = "twitch-bits",
+    /** Total Session bits count */
+    TWITCH_SESSION_BITS = "twitch-sessionBits",
+    /** Channel points redemption */
+    TWITCH_REDEMPTION = "twitch-redemption",
+    /** Hype train started */
+    TWITCH_HYPETRAIN_STARTED = "twitch-hypetrainStarted",
+    /** Hype train progress */
+    TWITCH_HYPETRAIN_PROGRESSED = "twitch-hypetrainProgressed",
+    /** Hype train level increased */
+    TWITCH_HYPETRAIN_LEVEL_PROGRESSED = "twitch-hypetrainLevelProgressed",
+    /** Hype train ended */
+    TWITCH_HYPETRAIN_ENDED = "twitch-hypetrainEnded",
+    /** Poll started */
+    TWITCH_POLL_STARTED = "twitch-pollStarted",
+    /** Poll progress update */
+    TWITCH_POLL_PROGRESSED = "twitch-pollProgressed",
+    /** Poll ended */
+    TWITCH_POLL_ENDED = "twitch-pollEnded",
+    /** Prediction started */
+    TWITCH_PREDICTION_STARTED = "twitch-predictionStarted",
+    /** Prediction progress update */
+    TWITCH_PREDICTION_PROGRESSED = "twitch-predictionProgressed",
+    /** Prediction locked */
+    TWITCH_PREDICTION_LOCKED = "twitch-predictionLocked",
+    /** Prediction ended */
+    TWITCH_PREDICTION_ENDED = "twitch-predictionEnded",
+    /** Goal started */
+    TWITCH_GOAL_STARTED = "twitch-goalStarted",
+    /** Goal progress update */
+    TWITCH_GOAL_PROGRESSED = "twitch-goalProgressed",
+    /** Goal completed */
+    TWITCH_GOAL_ENDED = "twitch-goalEnded",
+    /** Charity donation */
+    TWITCH_CHARITY_DONATION = "twitch-charityDonation",
+    /** Charity campaign started */
+    TWITCH_CHARITY_CAMPAIGN_STARTED = "twitch-charityCampaignStarted",
+    /** Charity campaign progress */
+    TWITCH_CHARITY_CAMPAIGN_PROGRESSED = "twitch-charityCampaignProgressed",
+    /** Charity campaign stopped */
+    TWITCH_CHARITY_CAMPAIGN_STOPPED = "twitch-charityCampaignStopped",
+    /** Stream category changed */
+    TWITCH_CATEGORY = "twitch-categoryChanged",
+    /** Clip created */
+    TWITCH_CLIP = "twitch-clip",
+    /** User joined channel */
+    TWITCH_CHANNEL_JOIN = "twitch-channelJoin",
+    /** User left channel */
+    TWITCH_CHANNEL_LEAVE = "twitch-channelLeave",
+    /** User banned */
+    TWITCH_BANNED = "twitch-banned",
+    /** User timed out */
+    TWITCH_TIMEOUT = "twitch-timeout",
+    /** User timeout expired */
+    TWITCH_TIMEOUT_OVER = "twitch-timeoutOver",
+    /** Shoutout received */
+    TWITCH_SHOUTOUT_RECEIVE = "twitch-shoutoutReceive",
+    /** Ad break started */
+    TWITCH_AD_STARTED = "twitch-adStarted",
+    /** Ad break ended */
+    TWITCH_AD_STOPPED = "twitch-adStopped",
+    /** Power-ups used */
+    TWITCH_POWERUPS = "twitch-powerups",
+    /** Power-up points earned */
+    TWITCH_POWERUPS_POINTS = "twitch-powerupsPoints",
+    /** YouTube stream went live */
+    YOUTUBE_STREAM_LIVE = "youtube-streamLive",
+    /** YouTube stream went offline */
+    YOUTUBE_STREAM_OFFLINE = "youtube-streamOffline",
+    /** First YouTube chat message */
+    YOUTUBE_FIRST_CHATTER = "youtube-firstChatter",
+    /** YouTube user entrance */
+    YOUTUBE_ENTRANCE = "youtube-entrance",
+    /** YouTube new subscriber */
+    YOUTUBE_SUBSCRIBER = "youtube-subscriber",
+    /** YouTube session subscribers */
+    YOUTUBE_SESSION_SUBS = "youtube-sessionSubs",
+    /** YouTube channel membership */
+    YOUTUBE_MEMBER = "youtube-member",
+    /** YouTube session members */
+    YOUTUBE_SESSION_MEMBERS = "youtube-sessionMembers",
+    /** YouTube gift members */
+    YOUTUBE_GIFT_MEMBERS = "youtube-giftMembers",
+    /** YouTube session gift members */
+    YOUTUBE_SESSION_GIFT_MEMBERS = "youtube-sessionGiftMembers",
+    /** YouTube Super Chat */
+    YOUTUBE_SUPERCHAT = "youtube-superchat",
+    /** YouTube session superchats */
+    YOUTUBE_SESSION_SUPERCHATS = "youtube-sessionSuperchats",
+    /** YouTube Super Sticker */
+    YOUTUBE_SUPERSTICKER = "youtube-supersticker",
+    /** YouTube session superstickers */
+    YOUTUBE_SESSION_SUPERSTICKERS = "youtube-sessionSuperstickers",
+    /** YouTube total likes */
+    YOUTUBE_LIKE = "youtube-like",
+    /** YouTube total views */
+    YOUTUBE_VIEWERS = "youtube-viewers",
+    /** Facebook stream went live */
+    FACEBOOK_STREAM_LIVE = "facebook-streamLive",
+    /** Facebook stream went offline */
+    FACEBOOK_STREAM_OFFLINE = "facebook-streamOffline",
+    /** First Facebook chat message */
+    FACEBOOK_FIRST_CHATTER = "facebook-firstChatter",
+    /** Facebook user entrance */
+    FACEBOOK_ENTRANCE = "facebook-entrance",
+    /** Facebook new follower */
+    FACEBOOK_FOLLOWER = "facebook-follower",
+    /** Facebook reaction */
+    FACEBOOK_REACTION = "facebook-reaction",
+    /** Facebook stars received */
+    FACEBOOK_STAR = "facebook-star",
+    /** Facebook support */
+    FACEBOOK_SUPPORT = "facebook-support",
+    /** Facebook gift subscription */
+    FACEBOOK_GIFT_SUBSCRIPTION = "facebook-subscriptionGift",
+    /** Facebook share */
+    FACEBOOK_SHARE = "facebook-share",
+    /** Facebook fan */
+    FACEBOOK_FAN = "facebook-fan",
+    /** Trovo stream went live */
+    TROVO_STREAM_LIVE = "trovo-streamLive",
+    /** Trovo stream went offline */
+    TROVO_STREAM_OFFLINE = "trovo-streamOffline",
+    /** First Trovo chat message */
+    TROVO_FIRST_CHATTER = "trovo-firstChatter",
+    /** Trovo user entrance */
+    TROVO_ENTRANCE = "trovo-entrance",
+    /** Trovo channel join */
+    TROVO_CHANNEL_JOIN = "trovo-channelJoin",
+    /** Trovo subscriber (potential, needs testing) */
+    TROVO_SUBSCRIBER = "trovo-subscriber",
+    /** Trovo follower (potential, needs testing) */
+    TROVO_FOLLOWER = "trovo-follower",
+    /** Trovo spell cast (potential, needs testing) */
+    TROVO_SPELL = "trovo-spell",
+    /** Trovo gift subscription */
+    TROVO_GIFT_SUBSCRIPTION = "trovo-giftSubscription",
+    /** Trovo raid */
+    TROVO_RAID = "trovo-raid",
+    /** First TikTok chat message */
+    TIKTOK_FIRST_CHATTER = "tiktok-firstChatter",
+    /** TikTok user entrance */
+    TIKTOK_ENTRANCE = "tiktok-entrance",
+    /** TikTok new follower */
+    TIKTOK_FOLLOWER = "tiktok-follower",
+    /** TikTok like received */
+    TIKTOK_LIKE = "tiktok-like",
+    /** TikTok total likes */
+    TIKTOK_TOTAL_LIKES = "tiktok-totalLikes",
+    /** TikTok gift received */
+    TIKTOK_GIFT = "tiktok-gift",
+    /** TikTok new subscriber */
+    TIKTOK_SUBSCRIBER = "tiktok-subscriber",
+    /** TikTok share */
+    TIKTOK_SHARE = "tiktok-share",
+    /** TikTok stream ended */
+    TIKTOK_STREAM_END = "tiktok-streamEnd",
+    /** New TikTok video posted */
+    TIKTOK_NEW_VIDEO = "tiktok-newVideo",
+    /** Kick points earned */
+    KICK_POINTS = "kick-points",
+    /** First Kick chat message */
+    KICK_FIRST_CHATTER = "kick-firstChatter",
+    /** Kick user entrance */
+    KICK_ENTRANCE = "kick-entrance",
+    /** Kick new follower */
+    KICK_FOLLOWER = "kick-follower",
+    /** Total Session followers count */
+    KICK_SESSION_FOLLOWERS = "kick-sessionFollowers",
+    /** Kick new subscriber */
+    KICK_SUBSCRIBER = "kick-subscriber",
+    /** Total Session subs count */
+    KICK_SESSION_SUBS = "kick-sessionSubs",
+    /** Kick gift subscription */
+    KICK_GIFT_SUBSCRIPTION = "kick-subscriptionGift",
+    /** Total Session gifts count */
+    KICK_SESSION_GIFT_SUBSCRIPTIONS = "kick-sessionGiftSubscriptions",
+    /** Kick kicks */
+    KICK_KICKS = "kick-kicks",
+    /** Kick Session kicks */
+    KICK_SESSION_KICKS = "kick-sessionKicks",
+    /** Kick host */
+    KICK_HOST = "kick-host",
+    /** Kick user banned */
+    KICK_BANNED = "kick-banned",
+    /** Kick user unbanned */
+    KICK_UNBANNED = "kick-unbanned",
+    /** First Discord message */
+    DISCORD_FIRST_CHATTER = "discord-firstChatter",
+    /** Discord user entrance */
+    DISCORD_ENTRANCE = "discord-entrance",
+    /** Streamlabs donation */
+    STREAMLABS_DONATION = "streamlabs-donation",
+    /** Streamlabs charity donation */
+    STREAMLABS_CHARITY = "streamlabs-charity",
+    /** Streamlabs merchandise purchase */
+    STREAMLABS_MERCH = "streamlabs-merch",
+    /** Streamlabs redemption */
+    STREAMLABS_REDEMPTION = "streamlabs-redemption",
+    /** Streamlabs Prime gift */
+    STREAMLABS_PRIMEGIFT = "streamlabs-primegift",
+    /** StreamElements donation */
+    STREAMELEMENTS_DONATION = "streamelements-donation",
+    /** Extra Life donation */
+    EXTRALIFE_DONATION = "extralife-donation",
+    /** DonorDrive donation */
+    DONORDRIVE_DONATION = "donordrive-donation",
+    /** Tiltify campaign donation */
+    TILTIFY_DONATION = "tiltify-campaignDonation",
+    /** TipeeeStream donation */
+    TIPEEESTREAM_DONATION = "tipeeestream-donation",
+    /** TreatStream treat */
+    TREATSTREAM_TREAT = "treatstream-treat",
+    /** Patreon pledge */
+    PATREON_PLEDGE = "patreon-campaignPledge",
+    /** Ko-fi donation */
+    KOFI_DONATION = "kofi-donation",
+    /** Ko-fi subscription */
+    KOFI_SUBSCRIPTION = "kofi-subscription",
+    /** Ko-fi commission */
+    KOFI_COMMISSION = "kofi-commission",
+    /** Ko-fi shop order */
+    KOFI_SHOPORDER = "kofi-shopOrder",
+    /** Fourthwall shop order */
+    FOURTHWALL_SHOPORDER = "fourthwall-shopOrder",
+    /** Fourthwall donation */
+    FOURTHWALL_DONATION = "fourthwall-donation",
+    /** Fourthwall subscription */
+    FOURTHWALL_SUBSCRIPTION = "fourthwall-subscription",
+    /** Fourthwall gift purchase */
+    FOURTHWALL_GIFTPURCHASE = "fourthwall-giftpurchase",
+    /** Fourthwall giveaway started */
+    FOURTHWALL_GIVEAWAY_STARTED = "fourthwall-giveawayStarted",
+    /** Fourthwall giveaway ended */
+    FOURTHWALL_GIVEAWAY_ENDED = "fourthwall-giveawayEnded",
+    /** Fourthwall thank you sent */
+    FOURTHWALL_THANKYOU_SENT = "fourthwall-thankyouSent",
+    /** OBS profile switched */
+    OBS_SWITCH_PROFILE = "obs-switchProfile",
+    /** OBS scene switched */
+    OBS_SWITCH_SCENE = "obs-switchScene",
+    /** OBS scene item visibility changed */
+    OBS_SCENE_ITEM_VISIBILITY = "obs-sceneItemVisibility",
+    /** OBS scene item hidden */
+    OBS_SCENE_ITEM_HIDDEN = "obs-sceneItemHidden",
+    /** OBS transition switched */
+    OBS_SWITCH_TRANSITION = "obs-switchTransition",
+    /** OBS transition started */
+    OBS_TRANSITION_BEGIN = "obs-transitionBegin",
+    /** OBS transition ended */
+    OBS_TRANSITION_END = "obs-transitionEnd",
+    /** OBS stream starting */
+    OBS_STREAM_STARTING = "obs-streamStarting",
+    /** OBS stream stopping */
+    OBS_STREAM_STOPPING = "obs-streamStopping",
+    /** OBS recording starting */
+    OBS_RECORDING_STARTING = "obs-recordingStarting",
+    /** OBS recording stopping */
+    OBS_RECORDING_STOPPING = "obs-recordingStopping",
+    /** OBS replay buffer saved */
+    OBS_REPLAY_BUFFER_SAVED = "obs-replayBufferSaved",
+    /** OBS vertical backtrack saved */
+    OBS_VERTICAL_BACKTRACK_SAVED = "obs-verticalBacktrackSaved",
+    /** OBS vendor-specific event */
+    OBS_VENDOR_EVENT = "obs-vendorEvent",
+    /** SLOBS scene collection switched */
+    SLOBS_SWITCH_SCENE_COLLECTION = "slobs-switchSceneCollection",
+    /** SLOBS scene switched */
+    SLOBS_SWITCH_SCENE = "slobs-switchScene",
+    /** SLOBS scene item visibility changed */
+    SLOBS_SCENE_ITEM_VISIBILITY = "slobs-sceneItemVisibility",
+    /** SLOBS scene item hidden */
+    SLOBS_SCENE_ITEM_HIDDEN = "slobs-sceneItemHidden",
+    /** Spotify song changed */
+    SPOTIFY_SWITCH_SONG = "spotify-switchSong",
+    /** Spotify song started playing */
+    SPOTIFY_SONG_PLAYED = "spotify-songPlayed",
+    /** Spotify song paused */
+    SPOTIFY_SONG_PAUSED = "spotify-songPaused",
+    /** YouTube Music song changed */
+    YOUTUBEMUSIC_SWITCH_SONG = "youtubemusic-switchSong",
+    /** YouTube Music song started playing */
+    YOUTUBEMUSIC_SONG_PLAYED = "youtubemusic-songPlayed",
+    /** YouTube Music song paused */
+    YOUTUBEMUSIC_SONG_PAUSED = "youtubemusic-songPaused",
+    /** Now Playing song changed */
+    NOWPLAYING_SWITCH_SONG = "nowplaying-switchSong",
+    /** Now Playing song started */
+    NOWPLAYING_SONG_PLAYED = "nowplaying-songPlayed",
+    /** Now Playing song paused */
+    NOWPLAYING_SONG_PAUSED = "nowplaying-songPaused",
+    /** VLC song changed */
+    VLC_SWITCH_SONG = "vlc-switchSong",
+    /** VLC song started playing */
+    VLC_SONG_PLAYED = "vlc-songPlayed",
+    /** VLC song paused */
+    VLC_SONG_PAUSED = "vlc-songPaused",
+    /** Heart rate update from Pulse */
+    PULSE_HEARTRATE = "pulse-heartrate",
+    /** Calories burned update from Pulse */
+    PULSE_CALORIES = "pulse-calories",
+    /** New Twitter/X follower */
+    TWITTER_FOLLOWER = "twitter-follower",
+    /** Twitter/X like received */
+    TWITTER_LIKE = "twitter-like",
+    /** Twitter/X retweet */
+    TWITTER_RETWEET = "twitter-retweet",
+    /** WooCommerce order received */
+    WOOCOMMERCE_ORDER = "woocommerce-order",
+    /** Streamer.bot action executed */
+    STREAMERBOT_ACTION = "streamerbot-action",
+    /** Crowd Control effect triggered */
+    CROWDCONTROL_EFFECT = "crowdcontrol-effect",
+    /** VTube Studio hotkey triggered */
+    VTUBESTUDIO_HOTKEY_TRIGGERED = "vtubestudio-hotkeyTriggered",
+    /** VTube Studio model loaded */
+    VTUBESTUDIO_MODEL_LOADED = "vtubestudio-modelLoaded",
+    /** VTube Studio animation started */
+    VTUBESTUDIO_ANIMATION_START = "vtubestudio-animationStart",
+    /** VTube Studio animation ended */
+    VTUBESTUDIO_ANIMATION_END = "vtubestudio-animationEnd",
+    /** VTube Studio item added */
+    VTUBESTUDIO_ITEM_ADDED = "vtubestudio-itemAdded",
+    /** VTube Studio item removed */
+    VTUBESTUDIO_ITEM_REMOVED = "vtubestudio-itemRemoved",
+    /** VTube Studio background changed */
+    VTUBESTUDIO_BACKGROUND_CHANGED = "vtubestudio-backgroundChanged",
+    /** Meld stream starting */
+    MELD_STREAM_STARTING = "meld-streamStarting",
+    /** Meld stream stopping */
+    MELD_STREAM_STOPPING = "meld-streamStopping",
+    /** Meld recording starting */
+    MELD_RECORDING_STARTING = "meld-recordingStarting",
+    /** Meld recording stopping */
+    MELD_RECORDING_STOPPING = "meld-recordingStopping",
+    /** Meld scene switched */
+    MELD_SWITCH_SCENE = "meld-switchScene",
+    /** Meld vertical scene switched */
+    MELD_SWITCH_VERTICAL_SCENE = "meld-switchVerticalScene"
+}
+
+// <auto-generated-end name="LumiaAlertValues" />
+
+// -----------------------------------------------------------------------------
+// System Variables
+// Use the **string values** of this enum inside overlays: e.g. {{twitch_total_subscriber_count}}, not {{TWITCH_TOTAL_SUBSCRIBER_COUNT}}.
+// -----------------------------------------------------------------------------
+
+// <auto-generated-start name="SystemVariables" />
+export declare enum SystemVariables {
+    /** Read from a local file. Example: {{read_file=C:\path\file.txt}}. Use in overlays as {{read_file}}. */
+    READ_FILE = "read_file",
+    /** Read from a simple GET URL (2s timeout). Example: {{read_url=https://api.example.com}}. Use as {{read_url}}. */
+    READ_URL = "read_url",
+    /** Selection helper for predefined options. Example: {{selection=first,second}}. Use as {{selection}}. */
+    SELECTION = "selection",
+    /** Random number between two values. Example: {{random=1,20}}. Use as {{random}}. */
+    RANDOM = "random",
+    /** Pick a random item from a comma list. Example: {{random_input=a,b,c}}. Use as {{random_input}}. */
+    RANDOM_INPUT = "random_input",
+    /** Sum multiple variables. Example: {{sum_variables=twitch_total_follower_count,kick_total_follower_count}}. Use as {{sum_variables}}. */
+    SUM_VARIABLES = "sum_variables",
+    /** Offset a variable by a number. Example: {{offset_count=twitch_total_follower_count,10}}. Use as {{offset_count}}. */
+    OFFSET_COUNT = "offset_count",
+    /** Get user-accessible commands. Use as {{get_commands}}. */
+    GET_COMMANDS = "get_commands",
+    /** Get all commands (full list). Use as {{get_all_commands}}. */
+    GET_ALL_COMMANDS = "get_all_commands",
+    /** Convert color names to hex; passes through hex. Example: {{convert_color_to_hex=green}}. Use as {{convert_color_to_hex}}. */
+    CONVERT_COLOR_TO_HEX = "convert_color_to_hex",
+    /** Latest file from a folder. Example: {{get_latest_file_from_folder=C:/Users/Desktop}}. Use as {{get_latest_file_from_folder}}. */
+    GET_LATEST_FILE_FROM_FOLDER = "get_latest_file_from_folder",
+    /** Random file from a folder. Example: {{get_random_file_from_folder=C:/Users/Desktop}}. Use as {{get_random_file_from_folder}}. */
+    GET_RANDOM_FILE_FROM_FOLDER = "get_random_file_from_folder",
+    /** Desktop screenshot (monitor selectable). Example: {{screenshot=2}}. Use as {{screenshot}}. */
+    SCREENSHOT = "screenshot",
+    /** Overlay screenshot. Example: {{overlay_screenshot=Overlay 1}}. Use as {{overlay_screenshot}}. */
+    OVERLAY_SCREENSHOT = "overlay_screenshot",
+    /** OBS screenshot (scene selectable). Example: {{obs_screenshot=Scene 1}}. Use as {{obs_screenshot}}. */
+    OBS_SCREENSHOT = "obs_screenshot",
+    /** Save OBS replay buffer (optional delay). Example: {{obs_replay=5}}. Use as {{obs_replay}}. */
+    OBS_REPLAY = "obs_replay",
+    /** Save OBS vertical replay (optional delay). Example: {{obs_vertical_replay=5}}. Use as {{obs_vertical_replay}}. */
+    OBS_VERTICAL_REPLAY = "obs_vertical_replay",
+    /** Current queue count. Example: {{get_queue_count}}. Use as {{get_queue_count}}. */
+    GET_QUEUE_COUNT = "get_queue_count",
+    /** Extract variable(s) from a message. Example: {{get_var_from_msg=name}}. Use as {{get_var_from_msg}}. */
+    GET_VAR_FROM_MSG = "get_var_from_msg",
+    /** Get loyalty points for a user. Example: {{get_user_loyalty_points=username,twitch}}. Use as {{get_user_loyalty_points}}. */
+    GET_USER_LOYALTY_POINTS = "get_user_loyalty_points",
+    /** Translate text (Google). Example: {{translate={{message}}|es}}. Use as {{translate}}. */
+    TRANSLATE = "translate",
+    /** Get the ai response from ai integration. Example: {{ai_prompt={{message}}}}. Use as {{ai_prompt}}. */
+    AI_PROMPT = "ai_prompt",
+    /** Commands URL/page. Use in overlays as {{commands_url}}. */
+    COMMANDS_URL = "commands_url",
+    /** Session start time (ISO). Use as {{session_start_date}}. */
+    SESSION_START_DATE = "session_start_date",
+    /** Last overlay screenshot path. Use as {{last_overlay_screenshot_path}}. */
+    LAST_OVERLAY_SCREENSHOT_PATH = "last_overlay_screenshot_path",
+    /** Last player to trigger a game. Use as {{game_last_player}}. */
+    GAME_LAST_PLAYER = "game_last_player",
+    /** Lumia app uptime. Use as {{lumia_uptime}}. */
+    LUMIA_UPTIME = "lumia_uptime",
+    /** Twitch stream uptime. Use as {{twitch_uptime}}. */
+    TWITCH_UPTIME = "twitch_uptime",
+    /** YouTube stream uptime. Use as {{youtube_uptime}}. */
+    YOUTUBE_UPTIME = "youtube_uptime",
+    /** Facebook stream uptime. Use as {{facebook_uptime}}. */
+    FACEBOOK_UPTIME = "facebook_uptime",
+    /** Trovo stream uptime. Use as {{trovo_uptime}}. */
+    TROVO_UPTIME = "trovo_uptime",
+    /** Twitch live status (true/false). Use as {{twitch_live}}. */
+    TWITCH_LIVE = "twitch_live",
+    /** YouTube live status (true/false). Use as {{youtube_live}}. */
+    YOUTUBE_LIVE = "youtube_live",
+    /** TikTok live status (true/false). Use as {{tiktok_live}}. */
+    TIKTOK_LIVE = "tiktok_live",
+    /** Facebook live status (true/false). Use as {{facebook_live}}. */
+    FACEBOOK_LIVE = "facebook_live",
+    /** Kick live status (true/false). Use as {{kick_live}}. */
+    KICK_LIVE = "kick_live",
+    /** BRB clips list (comma-separated URLs). Use as {{overlays_brb_clips}}. */
+    OVERLAYS_BRB_CLIPS = "overlays_brb_clips",
+    /** Last donator name. Use as {{latest_donator}}. */
+    LATEST_DONATOR = "latest_donator",
+    /** Last donation amount. Use as {{latest_donator_amount}}. */
+    LATEST_DONATOR_AMOUNT = "latest_donator_amount",
+    /** Last donation currency code. Use as {{latest_donator_currency}}. */
+    LATEST_DONATOR_CURRENCY = "latest_donator_currency",
+    /** Last donation currency symbol. Use as {{latest_donator_currency_symbol}}. */
+    LATEST_DONATOR_CURRENCY_SYMBOL = "latest_donator_currency_symbol",
+    /** Top donator this session. Use as {{session_top_donator}}. */
+    SESSION_TOP_DONATOR = "session_top_donator",
+    /** Top donation amount this session. Use as {{session_top_donator_amount}}. */
+    SESSION_TOP_DONATOR_AMOUNT = "session_top_donator_amount",
+    /** Top donation currency this session. Use as {{session_top_donator_currency}}. */
+    SESSION_TOP_DONATOR_CURRENCY = "session_top_donator_currency",
+    /** Top donation currency symbol this session. Use as {{session_top_donator_currency_symbol}}. */
+    SESSION_TOP_DONATOR_CURRENCY_SYMBOL = "session_top_donator_currency_symbol",
+    /** All-time top donator. Use as {{top_donator}}. */
+    TOP_DONATOR = "top_donator",
+    /** All-time top donation amount. Use as {{top_donator_amount}}. */
+    TOP_DONATOR_AMOUNT = "top_donator_amount",
+    /** All-time top donation currency code. Use as {{top_donator_currency}}. */
+    TOP_DONATOR_CURRENCY = "top_donator_currency",
+    /** All-time top donation currency symbol. Use as {{top_donator_currency_symbol}}. */
+    TOP_DONATOR_CURRENCY_SYMBOL = "top_donator_currency_symbol",
+    /** Top donators list (last 10). Use as {{top_donator_list}}. */
+    TOP_DONATOR_LIST = "top_donator_list",
+    /** Amounts for TOP_DONATOR_LIST. Use as {{top_donator_list_amount}}. */
+    TOP_DONATOR_LIST_AMOUNT = "top_donator_list_amount",
+    /** Currency codes for TOP_DONATOR_LIST. Use as {{top_donator_list_currency}}. */
+    TOP_DONATOR_LIST_CURRENCY = "top_donator_list_currency",
+    /** Currency symbols for TOP_DONATOR_LIST. Use as {{top_donator_list_currency_symbol}}. */
+    TOP_DONATOR_LIST_CURRENCY_SYMBOL = "top_donator_list_currency_symbol",
+    /** All-time total donation amount (normalized). Use as {{total_donation_amount}}. */
+    TOTAL_DONATION_AMOUNT = "total_donation_amount",
+    /** Currency code for TOTAL_DONATION_AMOUNT. Use as {{total_donation_amount_currency}}. */
+    TOTAL_DONATION_AMOUNT_CURRENCY = "total_donation_amount_currency",
+    /** Currency symbol for TOTAL_DONATION_AMOUNT. Use as {{total_donation_amount_currency_symbol}}. */
+    TOTAL_DONATION_AMOUNT_CURRENCY_SYMBOL = "total_donation_amount_currency_symbol",
+    /** Session donation sum. Use as {{session_donation_amount}}. */
+    SESSION_DONATION_AMOUNT = "session_donation_amount",
+    /** Session donation currency code. Use as {{session_donation_amount_currency}}. */
+    SESSION_DONATION_AMOUNT_CURRENCY = "session_donation_amount_currency",
+    /** Session donation currency symbol. Use as {{session_donation_amount_currency_symbol}}. */
+    SESSION_DONATION_AMOUNT_CURRENCY_SYMBOL = "session_donation_amount_currency_symbol",
+    /** All-time donation count. Use as {{donation_count}}. */
+    DONATION_COUNT = "donation_count",
+    /** Session donation count. Use as {{session_donation_count}}. */
+    SESSION_DONATION_COUNT = "session_donation_count",
+    /** Session donators list. Use as {{session_donator_list}}. */
+    SESSION_DONATOR_LIST = "session_donator_list",
+    /** Session donators with amounts. Use as {{session_donator_list_with_amount}}. */
+    SESSION_DONATOR_LIST_WITH_AMOUNT = "session_donator_list_with_amount",
+    /** Raw donation total ignoring currency. Use as {{total_raw_donation_amount}}. */
+    TOTAL_RAW_DONATION_AMOUNT = "total_raw_donation_amount",
+    /** Raffle title. Use as {{raffle_title}}. */
+    RAFFLE_TITLE = "raffle_title",
+    /** Raffle description. Use as {{raffle_description}}. */
+    RAFFLE_DESCRIPTION = "raffle_description",
+    /** Raffle entries (comma-separated). Use as {{raffle_entries}}. */
+    RAFFLE_ENTRIES = "raffle_entries",
+    /** Raffle generated number. Use as {{raffle_generated_number}}. */
+    RAFFLE_GENERATED_NUMBER = "raffle_generated_number",
+    /** Raffle entries count. Use as {{raffle_entries_count}}. */
+    RAFFLE_ENTRIES_COUNT = "raffle_entries_count",
+    /** Raffle winners (comma-separated). Use as {{raffle_winners}}. */
+    RAFFLE_WINNERS = "raffle_winners",
+    /** Raffle type/mode. Use as {{raffle_type}}. */
+    RAFFLE_TYPE = "raffle_type",
+    /** Current/last raffle winner username. Use as {{raffle_winner}}. */
+    RAFFLE_WINNER = "raffle_winner",
+    /** Raffle winner avatar URL. Use as {{raffle_winner_avatar}}. */
+    RAFFLE_WINNER_AVATAR = "raffle_winner_avatar",
+    /** Command used to enter the raffle (e.g., !join). Use as {{raffle_entry_command}}. */
+    RAFFLE_ENTRY_COMMAND = "raffle_entry_command",
+    /** Viewer queue title. Use as {{viewerqueue_title}}. */
+    VIEWERQUEUE_TITLE = "viewerqueue_title",
+    /** Viewer queue entry command (e.g., !joinq). Use as {{viewerqueue_entry_command}}. */
+    VIEWERQUEUE_ENTRY_COMMAND = "viewerqueue_entry_command",
+    /** Viewer queue entries (comma-separated). Use as {{viewerqueue_entries}}. */
+    VIEWERQUEUE_ENTRIES = "viewerqueue_entries",
+    /** Viewer queue selected players (comma-separated). Use as {{viewerqueue_players}}. */
+    VIEWERQUEUE_PLAYERS = "viewerqueue_players",
+    /** Viewer queue entries count. Use as {{viewerqueue_entries_count}}. */
+    VIEWERQUEUE_ENTRIES_COUNT = "viewerqueue_entries_count",
+    /** Viewer queue max entries limit. Use as {{viewerqueue_queue_limit}}. */
+    VIEWERQUEUE_QUEUE_LIMIT = "viewerqueue_queue_limit",
+    /** Response from most recent API Action (JSON stringified). Use as {{api_action_global_response}}. */
+    API_ACTION_GLOBAL_RESPONSE = "api_action_global_response",
+    /** Last RANDOM_INPUT selection. Use as {{last_random_input}}. */
+    LAST_RANDOM_INPUT = "last_random_input",
+    /** Loyalty currency display name (e.g., Lumipoints). Use as {{loyalty_currency_name}}. */
+    LOYALTY_CURRENCY_NAME = "loyalty_currency_name",
+    /** Time a user has followed (followage). Use as {{twitch_followage}}. */
+    TWITCH_FOLLOWAGE = "twitch_followage",
+    /** Time until next ad. Use as {{twitch_next_ad}}. */
+    TWITCH_NEXT_AD = "twitch_next_ad",
+    /** Get avatar by username. Example: {{twitch_get_avatar={{message}}}}. Use as {{twitch_get_avatar}}. */
+    TWITCH_GET_AVATAR = "twitch_get_avatar",
+    /** Channel user ID. Use as {{twitch_user_id}}. */
+    TWITCH_USER_ID = "twitch_user_id",
+    /** Channel username. Use as {{twitch_username}}. */
+    TWITCH_USERNAME = "twitch_username",
+    /** Current viewer count. Use as {{twitch_current_viewer_count}}. */
+    TWITCH_CURRENT_VIEWER_COUNT = "twitch_current_viewer_count",
+    /** Current viewers (comma-separated). Use as {{twitch_current_viewers}}. */
+    TWITCH_CURRENT_VIEWERS = "twitch_current_viewers",
+    /** Lifetime follower count. Use as {{twitch_total_follower_count}}. */
+    TWITCH_TOTAL_FOLLOWER_COUNT = "twitch_total_follower_count",
+    /** Current followers (comma-separated). Use as {{twitch_current_followers}}. */
+    TWITCH_CURRENT_FOLLOWERS = "twitch_current_followers",
+    /** Session followers count. Use as {{twitch_session_follower_count}}. */
+    TWITCH_SESSION_FOLLOWER_COUNT = "twitch_session_follower_count",
+    /** Current subscribers (comma-separated). Use as {{twitch_current_subscribers}}. */
+    TWITCH_CURRENT_SUBSCRIBERS = "twitch_current_subscribers",
+    /** Lifetime total subs. Use as {{twitch_total_subscriber_count}}. */
+    TWITCH_TOTAL_SUBSCRIBER_COUNT = "twitch_total_subscriber_count",
+    /** Session subs count. Use as {{twitch_session_subscribers_count}}. */
+    TWITCH_SESSION_SUBSCRIBERS_COUNT = "twitch_session_subscribers_count",
+    /** Session gifts count. Use as {{twitch_session_gifts_count}}. */
+    TWITCH_SESSION_GIFTS_COUNT = "twitch_session_gifts_count",
+    /** Lifetime gift members count. Use as {{twitch_total_gift_subscription_count}}. */
+    TWITCH_TOTAL_GIFT_SUBSCRIPTION_COUNT = "twitch_total_gift_subscription_count",
+    /** Current moderators (comma-separated). Use as {{twitch_current_mods}}. */
+    TWITCH_CURRENT_MODS = "twitch_current_mods",
+    /** Last follower. Use as {{twitch_last_follower}}. */
+    TWITCH_LAST_FOLLOWER = "twitch_last_follower",
+    /** Session followers list. Use as {{twitch_session_follower}}. */
+    TWITCH_SESSION_FOLLOWERS = "twitch_session_follower",
+    /** Last subscriber. Use as {{twitch_last_subscriber}}. */
+    TWITCH_LAST_SUBSCRIBER = "twitch_last_subscriber",
+    /** Session subscribers list. Use as {{twitch_session_subscribers}}. */
+    TWITCH_SESSION_SUBSCRIBERS = "twitch_session_subscribers",
+    /** Session chat count. Use as {{twitch_session_chat_count}}. */
+    TWITCH_SESSION_CHAT_COUNT = "twitch_session_chat_count",
+    /** Current first chatter. Use as {{twitch_current_first_chatter}}. */
+    TWITCH_CURRENT_FIRST_CHATTER = "twitch_current_first_chatter",
+    /** Current first chatter count. Use as {{twitch_current_first_chatter_count}}. */
+    TWITCH_CURRENT_FIRST_CHATTER_COUNT = "twitch_current_first_chatter_count",
+    /** Previous first chatter. Use as {{twitch_previous_first_chatter}}. */
+    TWITCH_PREVIOUS_FIRST_CHATTER = "twitch_previous_first_chatter",
+    /** Previous first chatter count. Use as {{twitch_previous_first_chatter_count}}. */
+    TWITCH_PREVIOUS_FIRST_CHATTER_COUNT = "twitch_previous_first_chatter_count",
+    /** Last chatter. Use as {{twitch_last_chatter}}. */
+    TWITCH_LAST_CHATTER = "twitch_last_chatter",
+    /** Last raider. Use as {{twitch_last_raider}}. */
+    TWITCH_LAST_RAIDER = "twitch_last_raider",
+    /** Last raid amount. Use as {{twitch_last_raid_amount}}. */
+    TWITCH_LAST_RAID_AMOUNT = "twitch_last_raid_amount",
+    /** Session raiders list. Use as {{twitch_session_raiders}}. */
+    TWITCH_SESSION_RAIDERS = "twitch_session_raiders",
+    /** Lifetime bits total. Use as {{twitch_total_bits_count}}. */
+    TWITCH_TOTAL_BITS_COUNT = "twitch_total_bits_count",
+    /** Session bits count. Use as {{twitch_session_bits_count}}. */
+    TWITCH_SESSION_BITS_COUNT = "twitch_session_bits_count",
+    /** Last bit sender. Use as {{twitch_last_bit}}. */
+    TWITCH_LAST_BIT = "twitch_last_bit",
+    /** Last bit amount. Use as {{twitch_last_bit_amount}}. */
+    TWITCH_LAST_BIT_AMOUNT = "twitch_last_bit_amount",
+    /** Session bits list. Use as {{twitch_session_bits}}. */
+    TWITCH_SESSION_BITS = "twitch_session_bits",
+    /** Session bits with amounts list. Use as {{twitch_session_bits_with_amount}}. */
+    TWITCH_SESSION_BITS_WITH_AMOUNT = "twitch_session_bits_with_amount",
+    /** Last clip ID. Use as {{twitch_last_clip_id}}. */
+    TWITCH_LAST_CLIP_ID = "twitch_last_clip_id",
+    /** Last clip URL. Use as {{twitch_last_clip_url}}. */
+    TWITCH_LAST_CLIP_URL = "twitch_last_clip_url",
+    /** Last clip thumbnail URL. Use as {{twitch_last_clip_thumbnail_url}}. */
+    TWITCH_LAST_CLIP_THUMBNAIL_URL = "twitch_last_clip_thumbnail_url",
+    /** Channel title. Use as {{twitch_channel_title}}. */
+    TWITCH_CHANNEL_TITLE = "twitch_channel_title",
+    /** Channel description. Use as {{twitch_channel_description}}. */
+    TWITCH_CHANNEL_DESCRIPTION = "twitch_channel_description",
+    /** Channel avatar URL. Use as {{twitch_avatar}}. */
+    TWITCH_AVATAR = "twitch_avatar",
+    /** Offline image URL. Use as {{twitch_offline_image}}. */
+    TWITCH_OFFLINE_IMAGE = "twitch_offline_image",
+    /** Current category/game. Use as {{twitch_category}}. */
+    TWITCH_CATEGORY = "twitch_category",
+    /** Current category/game ID. Use as {{twitch_category_id}}. */
+    TWITCH_CATEGORY_ID = "twitch_category_id",
+    /** Current poll ID. Use as {{twitch_current_poll_id}}. */
+    TWITCH_CURRENT_POLL_ID = "twitch_current_poll_id",
+    /** Current prediction ID. Use as {{twitch_current_prediction_id}}. */
+    TWITCH_CURRENT_PREDICTION_ID = "twitch_current_prediction_id",
+    /** Current viewer count. Use as {{youtube_current_viewer_count}}. */
+    YOUTUBE_CURRENT_VIEWER_COUNT = "youtube_current_viewer_count",
+    /** Total viewer count (stream). Use as {{youtube_total_viewer_count}}. */
+    YOUTUBE_TOTAL_VIEWER_COUNT = "youtube_total_viewer_count",
+    /** Stream likes. Use as {{youtube_stream_likes}}. */
+    YOUTUBE_STREAM_LIKES = "youtube_stream_likes",
+    /** Stream dislikes. Use as {{youtube_stream_dislikes}}. */
+    YOUTUBE_STREAM_DISLIKES = "youtube_stream_dislikes",
+    /** Stream chat message count. Use as {{youtube_stream_chat_count}}. */
+    YOUTUBE_STREAM_CHAT_COUNT = "youtube_stream_chat_count",
+    /** Session chat count. Use as {{youtube_session_chat_count}}. */
+    YOUTUBE_SESSION_CHAT_COUNT = "youtube_session_chat_count",
+    /** Current first chatter. Use as {{youtube_current_first_chatter}}. */
+    YOUTUBE_CURRENT_FIRST_CHATTER = "youtube_current_first_chatter",
+    /** Current first chatter count. Use as {{youtube_current_first_chatter_count}}. */
+    YOUTUBE_CURRENT_FIRST_CHATTER_COUNT = "youtube_current_first_chatter_count",
+    /** Previous first chatter. Use as {{youtube_previous_first_chatter}}. */
+    YOUTUBE_PREVIOUS_FIRST_CHATTER = "youtube_previous_first_chatter",
+    /** Previous first chatter count. Use as {{youtube_previous_first_chatter_count}}. */
+    YOUTUBE_PREVIOUS_FIRST_CHATTER_COUNT = "youtube_previous_first_chatter_count",// keep exact value
+    /** Last chatter. Use as {{youtube_last_chatter}}. */
+    YOUTUBE_LAST_CHATTER = "youtube_last_chatter",
+    /** Session subscriber count. Use as {{youtube_session_subscriber_count}}. */
+    YOUTUBE_SESSION_SUBSCRIBER_COUNT = "youtube_session_subscriber_count",
+    /** Lifetime subscriber count. Use as {{youtube_total_subscriber_count}}. */
+    YOUTUBE_TOTAL_SUBSCRIBER_COUNT = "youtube_total_subscriber_count",
+    /** Session SuperChat count. Use as {{youtube_session_superchat_count}}. */
+    YOUTUBE_SESSION_SUPERCHAT_COUNT = "youtube_session_superchat_count",
+    /** Last SuperChatter. Use as {{youtube_last_superchatter}}. */
+    YOUTUBE_LAST_SUPERCHATTER = "youtube_last_superchatter",
+    /** Session SuperChatters (list). Use as {{youtube_session_superchatters}}. */
+    YOUTUBE_SESSION_SUPERCHATTERS = "youtube_session_superchatters",
+    /** Session SuperSticker count. Use as {{youtube_session_supersticker_count}}. */
+    YOUTUBE_SESSION_SUPERSTICKER_COUNT = "youtube_session_supersticker_count",
+    /** Last SuperSticker sender. Use as {{youtube_last_supersticker}}. */
+    YOUTUBE_LAST_SUPERSTICKER = "youtube_last_supersticker",
+    /** Session SuperStickers (list). Use as {{youtube_session_superstickers}}. */
+    YOUTUBE_SESSION_SUPERSTICKERS = "youtube_session_superstickers",
+    /** Lifetime member count. Use as {{youtube_total_member_count}}. */
+    YOUTUBE_TOTAL_MEMBER_COUNT = "youtube_total_member_count",
+    /** Session member count. Use as {{youtube_session_member_count}}. */
+    YOUTUBE_SESSION_MEMBER_COUNT = "youtube_session_member_count",
+    /** Last member. Use as {{youtube_last_member}}. */
+    YOUTUBE_LAST_MEMBER = "youtube_last_member",
+    /** Session members (list). Use as {{youtube_session_members}}. */
+    YOUTUBE_SESSION_MEMBERS = "youtube_session_members",
+    /** Lifetime gift members count. Use as {{youtube_total_gift_members_count}}. */
+    YOUTUBE_TOTAL_GIFT_MEMBERS_COUNT = "youtube_total_gift_members_count",
+    /** Session gift members count. Use as {{youtube_session_gift_members_count}}. */
+    YOUTUBE_SESSION_GIFT_MEMBERS_COUNT = "youtube_session_gift_members_count",
+    /** Last gift member. Use as {{youtube_last_gift_member}}. */
+    YOUTUBE_LAST_GIFT_MEMBER = "youtube_last_gift_member",
+    /** Session gift members (list). Use as {{youtube_session_gift_members}}. */
+    YOUTUBE_SESSION_GIFT_MEMBERS = "youtube_session_gift_members",
+    /** Last subscriber. Use as {{youtube_last_subscriber}}. */
+    YOUTUBE_LAST_SUBSCRIBER = "youtube_last_subscriber",
+    /** Total uploaded videos. Use as {{youtube_total_video_count}}. */
+    YOUTUBE_TOTAL_VIDEO_COUNT = "youtube_total_video_count",
+    /** Total channel views. Use as {{youtube_total_view_count}}. */
+    YOUTUBE_TOTAL_VIEW_COUNT = "youtube_total_view_count",
+    /** Session chat count. Use as {{facebook_session_chat_count}}. */
+    FACEBOOK_SESSION_CHAT_COUNT = "facebook_session_chat_count",
+    /** Current first chatter. Use as {{facebook_current_first_chatter}}. */
+    FACEBOOK_CURRENT_FIRST_CHATTER = "facebook_current_first_chatter",
+    /** Current first chatter count. Use as {{facebook_current_first_chatter_count}}. */
+    FACEBOOK_CURRENT_FIRST_CHATTER_COUNT = "facebook_current_first_chatter_count",
+    /** Previous first chatter. Use as {{facebook_previous_first_chatter}}. */
+    FACEBOOK_PREVIOUS_FIRST_CHATTER = "facebook_previous_first_chatter",
+    /** Previous first chatter count. Use as {{facebook_previous_first_chatter_count}}. */
+    FACEBOOK_PREVIOUS_FIRST_CHATTER_COUNT = "facebook_previous_first_chatter_count",// keep exact value
+    /** Last chatter. Use as {{facebook_last_chatter}}. */
+    FACEBOOK_LAST_CHATTER = "facebook_last_chatter",
+    /** Lifetime follower count. Use as {{facebook_total_follower_count}}. */
+    FACEBOOK_TOTAL_FOLLOWER_COUNT = "facebook_total_follower_count",
+    /** Session follower count. Use as {{facebook_session_follower_count}}. */
+    FACEBOOK_SESSION_FOLLOWER_COUNT = "facebook_session_follower_count",
+    /** Lifetime fan count. Use as {{facebook_total_fan_count}}. */
+    FACEBOOK_TOTAL_FAN_COUNT = "facebook_total_fan_count",
+    /** Session fan count. Use as {{facebook_session_fan_count}}. */
+    FACEBOOK_SESSION_FAN_COUNT = "facebook_session_fan_count",
+    /** Session reaction count. Use as {{facebook_reaction_count}}. */
+    FACEBOOK_REACTION_COUNT = "facebook_reaction_count",
+    /** Last Stars sender. Use as {{facebook_last_star}}. */
+    FACEBOOK_LAST_STAR = "facebook_last_star",
+    /** Last Stars amount. Use as {{facebook_last_star_amount}}. */
+    FACEBOOK_LAST_STAR_AMOUNT = "facebook_last_star_amount",
+    /** Session Stars list. Use as {{facebook_session_stars}}. */
+    FACEBOOK_SESSION_STARS = "facebook_session_stars",
+    /** Session Stars with amounts list. Use as {{facebook_session_stars_with_amount}}. */
+    FACEBOOK_SESSION_STARS_WITH_AMOUNT = "facebook_session_stars_with_amount",
+    /** Session chat count. Use as {{tiktok_session_chat_count}}. */
+    TIKTOK_SESSION_CHAT_COUNT = "tiktok_session_chat_count",
+    /** Current first chatter. Use as {{tiktok_current_first_chatter}}. */
+    TIKTOK_CURRENT_FIRST_CHATTER = "tiktok_current_first_chatter",
+    /** Current first chatter count. Use as {{tiktok_current_first_chatter_count}}. */
+    TIKTOK_CURRENT_FIRST_CHATTER_COUNT = "tiktok_current_first_chatter_count",
+    /** Previous first chatter. Use as {{tiktok_previous_first_chatter}}. */
+    TIKTOK_PREVIOUS_FIRST_CHATTER = "tiktok_previous_first_chatter",
+    /** Previous first chatter count. Use as {{tiktok_previous_first_chatter_count}}. */
+    TIKTOK_PREVIOUS_FIRST_CHATTER_COUNT = "tiktok_previous_first_chatter_count",// keep exact value
+    /** Last chatter. Use as {{tiktok_last_chatter}}. */
+    TIKTOK_LAST_CHATTER = "tiktok_last_chatter",
+    /** Current viewer count. Use as {{tiktok_current_viewer_count}}. */
+    TIKTOK_CURRENT_VIEWER_COUNT = "tiktok_current_viewer_count",
+    /** Lifetime follower count. Use as {{tiktok_total_follower_count}}. */
+    TIKTOK_TOTAL_FOLLOWER_COUNT = "tiktok_total_follower_count",
+    /** Session follower count. Use as {{tiktok_session_follower_count}}. */
+    TIKTOK_SESSION_FOLLOWER_COUNT = "tiktok_session_follower_count",
+    /** Session subscriber count. Use as {{tiktok_session_subscriber_count}}. */
+    TIKTOK_SESSION_SUBSCRIBER_COUNT = "tiktok_session_subscriber_count",
+    /** Session share count. Use as {{tiktok_session_share_count}}. */
+    TIKTOK_SESSION_SHARE_COUNT = "tiktok_session_share_count",
+    /** Last follower. Use as {{tiktok_last_follower}}. */
+    TIKTOK_LAST_FOLLOWER = "tiktok_last_follower",
+    /** Last subscriber. Use as {{tiktok_last_subscriber}}. */
+    TIKTOK_LAST_SUBSCRIBER = "tiktok_last_subscriber",
+    /** Last gifter. Use as {{tiktok_last_gifter}}. */
+    TIKTOK_LAST_GIFTER = "tiktok_last_gifter",
+    /** Session gifters (list). Use as {{tiktok_session_gifters}}. */
+    TIKTOK_SESSION_GIFTERS = "tiktok_session_gifters",
+    /** Session gifts (count/list). Use as {{tiktok_session_gifts}}. */
+    TIKTOK_SESSION_GIFTS = "tiktok_session_gifts",
+    /** Total gifts. Use as {{tiktok_total_gifts}}. */
+    TIKTOK_TOTAL_GIFTS = "tiktok_total_gifts",
+    /** Total likes. Use as {{tiktok_total_likes}}. */
+    TIKTOK_TOTAL_LIKES = "tiktok_total_likes",
+    /** Uploaded videos count. Use as {{tiktok_video_count}}. */
+    TIKTOK_VIDEO_COUNT = "tiktok_video_count",
+    /** Last video title. Use as {{tiktok_last_video_title}}. */
+    TIKTOK_LAST_VIDEO_TITLE = "tiktok_last_video_title",
+    /** Last video ID. Use as {{tiktok_last_video_id}}. */
+    TIKTOK_LAST_VIDEO_ID = "tiktok_last_video_id",
+    /** Last video link. Use as {{tiktok_last_video_link}}. */
+    TIKTOK_LAST_VIDEO_LINK = "tiktok_last_video_link",
+    /** Last video embed URL. Use as {{tiktok_last_video_embed}}. */
+    TIKTOK_LAST_VIDEO_EMBED = "tiktok_last_video_embed",
+    /** Channel user ID. Use as {{kick_user_id}}. */
+    KICK_USER_ID = "kick_user_id",
+    /** Channel username. Use as {{kick_username}}. */
+    KICK_USERNAME = "kick_username",
+    /** Channel title. Use as {{kick_channel_title}}. */
+    KICK_CHANNEL_TITLE = "kick_channel_title",
+    /** Channel description. Use as {{kick_channel_description}}. */
+    KICK_CHANNEL_DESCRIPTION = "kick_channel_description",
+    /** Channel avatar URL. Use as {{kick_avatar}}. */
+    KICK_AVATAR = "kick_avatar",
+    /** Current category. Use as {{kick_category}}. */
+    KICK_CATEGORY = "kick_category",
+    /** Current category ID. Use as {{kick_category_id}}. */
+    KICK_CATEGORY_ID = "kick_category_id",
+    /** Stream title. Use as {{kick_stream_title}}. */
+    KICK_STREAM_TITLE = "kick_stream_title",
+    /** Session chat count. Use as {{kick_session_chat_count}}. */
+    KICK_SESSION_CHAT_COUNT = "kick_session_chat_count",
+    /** Current first chatter. Use as {{kick_current_first_chatter}}. */
+    KICK_CURRENT_FIRST_CHATTER = "kick_current_first_chatter",
+    /** Current first chatter count. Use as {{kick_current_first_chatter_count}}. */
+    KICK_CURRENT_FIRST_CHATTER_COUNT = "kick_current_first_chatter_count",
+    /** Previous first chatter. Use as {{kick_previous_first_chatter}}. */
+    KICK_PREVIOUS_FIRST_CHATTER = "kick_previous_first_chatter",
+    /** Previous first chatter count. Use as {{kick_previous_first_chatter_count}}. */
+    KICK_PREVIOUS_FIRST_CHATTER_COUNT = "kick_previous_first_chatter_count",// keep exact value
+    /** Last chatter. Use as {{kick_last_chatter}}. */
+    KICK_LAST_CHATTER = "kick_last_chatter",
+    /** Current viewer count. Use as {{kick_current_viewer_count}}. */
+    KICK_CURRENT_VIEWER_COUNT = "kick_current_viewer_count",
+    /** Lifetime follower count. Use as {{kick_total_follower_count}}. */
+    KICK_TOTAL_FOLLOWER_COUNT = "kick_total_follower_count",
+    /** Session follower count. Use as {{kick_session_follower_count}}. */
+    KICK_SESSION_FOLLOWER_COUNT = "kick_session_follower_count",
+    /** Lifetime total subs. Use as {{kick_total_subscriber_count}}. */
+    KICK_TOTAL_SUBSCRIBER_COUNT = "kick_total_subscriber_count",
+    /** Session subs count. Use as {{kick_session_subscriber_count}}. */
+    KICK_SESSION_SUBSCRIBER_COUNT = "kick_session_subscriber_count",
+    /** Session gifts count. Use as {{kick_session_gifts_count}}. */
+    KICK_SESSION_GIFTS_COUNT = "kick_session_gifts_count",
+    /** Session subscribers list. Use as {{kick_session_subscribers}}. */
+    KICK_SESSION_SUBSCRIBERS = "kick_session_subscribers",
+    /** Last user to send a Kicks. Use as {{kick_last_kicks}}. */
+    KICK_LAST_KICKS = "kick_last_kicks",
+    /** Last amount of a Kicks sent. Use as {{kick_last_kicks_amount}}. */
+    KICK_LAST_KICKS_AMOUNT = "kick_last_kicks_amount",
+    /** Lifetime kicks count. Use as {{kick_total_kicks_count}}. */
+    KICK_TOTAL_KICKS_COUNT = "kick_total_kicks_count",
+    /** Session kicks count. Use as {{kick_session_kicks_count}}. */
+    KICK_SESSION_KICKS_COUNT = "kick_session_kicks_count",
+    /** Session kicks list. Use as {{kick_session_kicks}}. */
+    KICK_SESSION_KICKS = "kick_session_kicks",
+    /** Session kicks with amounts list. Use as {{kick_session_kicks_with_amount}}. */
+    KICK_SESSION_KICKS_WITH_AMOUNT = "kick_session_kicks_with_amount",
+    /** Last follower. Use as {{kick_last_follower}}. */
+    KICK_LAST_FOLLOWER = "kick_last_follower",
+    /** Last subscriber. Use as {{kick_last_subscriber}}. */
+    KICK_LAST_SUBSCRIBER = "kick_last_subscriber",
+    /** Lifetime gift members count. Use as {{kick_total_gift_subscription_count}}. */
+    KICK_TOTAL_GIFT_SUBSCRIPTION_COUNT = "kick_total_gift_subscription_count",
+    /** Get avatar by username. Use as {{kick_get_avatar}}. */
+    KICK_GET_AVATAR = "kick_get_avatar",
+    /** Live status (true/false). Use as {{trovo_live}}. */
+    TROVO_LIVE = "trovo_live",
+    /** Session chat count. Use as {{trovo_session_chat_count}}. */
+    TROVO_SESSION_CHAT_COUNT = "trovo_session_chat_count",
+    /** Last follower. Use as {{trovo_last_follower}}. */
+    TROVO_LAST_FOLLOWER = "trovo_last_follower",
+    /** Current first chatter. Use as {{trovo_current_first_chatter}}. */
+    TROVO_CURRENT_FIRST_CHATTER = "trovo_current_first_chatter",
+    /** Current first chatter count. Use as {{trovo_current_first_chatter_count}}. */
+    TROVO_CURRENT_FIRST_CHATTER_COUNT = "trovo_current_first_chatter_count",
+    /** Previous first chatter. Use as {{trovo_previous_first_chatter}}. */
+    TROVO_PREVIOUS_FIRST_CHATTER = "trovo_previous_first_chatter",
+    /** Previous first chatter count. Use as {{trovo_previous_first_chatter_count}}. */
+    TROVO_PREVIOUS_FIRST_CHATTER_COUNT = "trovo_previous_first_chatter_count",// keep exact value
+    /** Last chatter. Use as {{trovo_last_chatter}}. */
+    TROVO_LAST_CHATTER = "trovo_last_chatter",
+    /** Last raid amount. Use as {{trovo_last_raid_amount}}. */
+    TROVO_LAST_RAID_AMOUNT = "trovo_last_raid_amount",
+    /** Last raider. Use as {{trovo_last_raider}}. */
+    TROVO_LAST_RAIDER = "trovo_last_raider",
+    /** Session follower count. Use as {{trovo_session_follower_count}}. */
+    TROVO_SESSION_FOLLOWER_COUNT = "trovo_session_follower_count",
+    /** Session subscribers count. Use as {{trovo_session_subscribers_count}}. */
+    TROVO_SESSION_SUBSCRIBERS_COUNT = "trovo_session_subscribers_count",
+    /** Session raiders list. Use as {{trovo_session_raiders}}. */
+    TROVO_SESSION_RAIDERS = "trovo_session_raiders",
+    /** Last subscriber. Use as {{trovo_last_subscriber}}. */
+    TROVO_LAST_SUBSCRIBER = "trovo_last_subscriber",
+    /** Session subscribers list. Use as {{trovo_session_subscribers}}. */
+    TROVO_SESSION_SUBSCRIBERS = "trovo_session_subscribers",
+    /** Now playing song title. Use as {{spotify_now_playing_song}}. */
+    SPOTIFY_NOW_PLAYING_SONG = "spotify_now_playing_song",
+    /** Now playing artwork URL. Use as {{spotify_now_playing_image}}. */
+    SPOTIFY_NOW_PLAYING_IMAGE = "spotify_now_playing_image",
+    /** Now playing artist(s). Use as {{spotify_now_playing_artist}}. */
+    SPOTIFY_NOW_PLAYING_ARTIST = "spotify_now_playing_artist",
+    /** Now playing track ID. Use as {{spotify_now_playing_id}}. */
+    SPOTIFY_NOW_PLAYING_ID = "spotify_now_playing_id",
+    /** Now playing track URL. Use as {{spotify_now_playing_url}}. */
+    SPOTIFY_NOW_PLAYING_URL = "spotify_now_playing_url",
+    /** Now playing Spotify URI. Use as {{spotify_now_playing_uri}}. */
+    SPOTIFY_NOW_PLAYING_URI = "spotify_now_playing_uri",
+    /** Next song title. Use as {{spotify_next_song}}. */
+    SPOTIFY_NEXT_SONG = "spotify_next_song",
+    /** Next song artwork URL. Use as {{spotify_next_image}}. */
+    SPOTIFY_NEXT_IMAGE = "spotify_next_image",
+    /** Next song artist(s). Use as {{spotify_next_artist}}. */
+    SPOTIFY_NEXT_ARTIST = "spotify_next_artist",
+    /** Next song ID. Use as {{spotify_next_id}}. */
+    SPOTIFY_NEXT_ID = "spotify_next_id",
+    /** Next song URL. Use as {{spotify_next_url}}. */
+    SPOTIFY_NEXT_URL = "spotify_next_url",
+    /** Next song Spotify URI. Use as {{spotify_next_uri}}. */
+    SPOTIFY_NEXT_URI = "spotify_next_uri",
+    /** Current queue (comma-separated). Use as {{spotify_queue}}. */
+    SPOTIFY_QUEUE = "spotify_queue",
+    /** Now playing song title. Use as {{youtubemusic_now_playing_song}}. */
+    YOUTUBEMUSIC_NOW_PLAYING_SONG = "youtubemusic_now_playing_song",
+    /** Now playing artwork URL. Use as {{youtubemusic_now_playing_image}}. */
+    YOUTUBEMUSIC_NOW_PLAYING_IMAGE = "youtubemusic_now_playing_image",
+    /** Now playing artist(s). Use as {{youtubemusic_now_playing_artist}}. */
+    YOUTUBEMUSIC_NOW_PLAYING_ARTIST = "youtubemusic_now_playing_artist",
+    /** Now playing ID. Use as {{youtubemusic_now_playing_id}}. */
+    YOUTUBEMUSIC_NOW_PLAYING_ID = "youtubemusic_now_playing_id",
+    /** Now playing URL. Use as {{youtubemusic_now_playing_url}}. */
+    YOUTUBEMUSIC_NOW_PLAYING_URL = "youtubemusic_now_playing_url",
+    /** Next song title. Use as {{youtubemusic_next_song}}. */
+    YOUTUBEMUSIC_NEXT_SONG = "youtubemusic_next_song",
+    /** Next song artwork URL. Use as {{youtubemusic_next_image}}. */
+    YOUTUBEMUSIC_NEXT_IMAGE = "youtubemusic_next_image",
+    /** Next song artist(s). Use as {{youtubemusic_next_artist}}. */
+    YOUTUBEMUSIC_NEXT_ARTIST = "youtubemusic_next_artist",
+    /** Next song ID. Use as {{youtubemusic_next_id}}. */
+    YOUTUBEMUSIC_NEXT_ID = "youtubemusic_next_id",
+    /** Next song URL. Use as {{youtubemusic_next_url}}. */
+    YOUTUBEMUSIC_NEXT_URL = "youtubemusic_next_url",
+    /** Current queue (comma-separated). Use as {{youtubemusic_queue}}. */
+    YOUTUBEMUSIC_QUEUE = "youtubemusic_queue",
+    /** Track ID (computed). Use as {{now_playing_id}}. */
+    NOW_PLAYING_ID = "now_playing_id",
+    /** Track title. Use as {{now_playing_title}}. */
+    NOW_PLAYING_TITLE = "now_playing_title",
+    /** Artwork URL. Use as {{now_playing_artwork}}. */
+    NOW_PLAYING_ARTWORK = "now_playing_artwork",
+    /** Artist name(s). Use as {{now_playing_artist}}. */
+    NOW_PLAYING_ARTIST = "now_playing_artist",
+    /** Album name. Use as {{now_playing_album}}. */
+    NOW_PLAYING_ALBUM = "now_playing_album",
+    /** Label. Use as {{now_playing_label}}. */
+    NOW_PLAYING_LABEL = "now_playing_label",
+    /** BPM. Use as {{now_playing_bpm}}. */
+    NOW_PLAYING_BPM = "now_playing_bpm",
+    /** Rating. Use as {{now_playing_rating}}. */
+    NOW_PLAYING_RATING = "now_playing_rating",
+    /** Length (seconds). Use as {{now_playing_length}}. */
+    NOW_PLAYING_LENGTH = "now_playing_length",
+    /** Comment. Use as {{now_playing_comment}}. */
+    NOW_PLAYING_COMMENT = "now_playing_comment",
+    /** Musical key. Use as {{now_playing_key}}. */
+    NOW_PLAYING_KEY = "now_playing_key",
+    /** Generic URL. Use as {{now_playing_url}}. */
+    NOW_PLAYING_URL = "now_playing_url",
+    /** Spotify URL. Use as {{now_playing_spotify_url}}. */
+    NOW_PLAYING_SPOTIFY_URL = "now_playing_spotify_url",
+    /** Beatport URL. Use as {{now_playing_beatport_url}}. */
+    NOW_PLAYING_BEATPORT_URL = "now_playing_beatport_url",
+    /** Beatport ID. Use as {{now_playing_beatport_id}}. */
+    NOW_PLAYING_BEATPORT_ID = "now_playing_beatport_id",
+    /** File path to media. Use as {{now_playing_file_path}}. */
+    NOW_PLAYING_FILE_PATH = "now_playing_file_path",
+    /** Currently playing media title. Use as {{vlc_now_playing_media}}. */
+    VLC_NOW_PLAYING_MEDIA = "vlc_now_playing_media",
+    /** Artwork URL. Use as {{vlc_now_playing_image}}. */
+    VLC_NOW_PLAYING_IMAGE = "vlc_now_playing_image",
+    /** Artist(s). Use as {{vlc_now_playing_artist}}. */
+    VLC_NOW_PLAYING_ARTIST = "vlc_now_playing_artist",
+    /** Media ID. Use as {{vlc_now_playing_id}}. */
+    VLC_NOW_PLAYING_ID = "vlc_now_playing_id",
+    /** Media URL. Use as {{vlc_now_playing_url}}. */
+    VLC_NOW_PLAYING_URL = "vlc_now_playing_url",
+    /** Media URI. Use as {{vlc_now_playing_uri}}. */
+    VLC_NOW_PLAYING_URI = "vlc_now_playing_uri",
+    /** Voice changer on (true/false). Use as {{voicemod_voice_changer_on}}. */
+    VOICEMOD_VOICE_CHANGER_ON = "voicemod_voice_changer_on",
+    /** Previous voice. Use as {{voicemod_previous_voice}}. */
+    VOICEMOD_PREVIOUS_VOICE = "voicemod_previous_voice",
+    /** Current voice. Use as {{voicemod_current_voice}}. */
+    VOICEMOD_CURRENT_VOICE = "voicemod_current_voice",
+    /** Last order full name. Use as {{woocommerce_last_order_name}}. */
+    WOOCOMMERCE_LAST_ORDER_NAME = "woocommerce_last_order_name",
+    /** Last order first name. Use as {{woocommerce_last_order_first_name}}. */
+    WOOCOMMERCE_LAST_ORDER_FIRST_NAME = "woocommerce_last_order_first_name",
+    /** Last order last name. Use as {{woocommerce_last_order_last_name}}. */
+    WOOCOMMERCE_LAST_ORDER_LAST_NAME = "woocommerce_last_order_last_name",
+    /** Last ordered item (first). Use as {{woocommerce_last_order_item}}. */
+    WOOCOMMERCE_LAST_ORDER_ITEM = "woocommerce_last_order_item",
+    /** Last ordered items (list). Use as {{woocommerce_last_order_items}}. */
+    WOOCOMMERCE_LAST_ORDER_ITEMS = "woocommerce_last_order_items",
+    /** Last order amount. Use as {{woocommerce_last_order_amount}}. */
+    WOOCOMMERCE_LAST_ORDER_AMOUNT = "woocommerce_last_order_amount",
+    /** Last order amount currency code. Use as {{woocommerce_last_order_amount_currency}}. */
+    WOOCOMMERCE_LAST_ORDER_AMOUNT_CURRENCY = "woocommerce_last_order_amount_currency",
+    /** Is streaming (true/false). Use as {{obs_is_streaming}}. */
+    OBS_IS_STREAMING = "obs_is_streaming",
+    /** Is recording (true/false). Use as {{obs_is_recording}}. */
+    OBS_IS_RECORDING = "obs_is_recording",
+    /** Last recording path. Use as {{obs_last_recording_path}}. */
+    OBS_LAST_RECORDING_PATH = "obs_last_recording_path",
+    /** Studio mode on (true/false). Use as {{obs_studio_mode}}. */
+    OBS_STUDIO_MODE = "obs_studio_mode",
+    /** Current profile. Use as {{obs_current_profile}}. */
+    OBS_CURRENT_PROFILE = "obs_current_profile",
+    /** Current scene. Use as {{obs_current_scene}}. */
+    OBS_CURRENT_SCENE = "obs_current_scene",
+    /** Previous scene. Use as {{obs_previous_scene}}. */
+    OBS_PREVIOUS_SCENE = "obs_previous_scene",
+    /** Current transition (if transitioning). Use as {{obs_current_transition}}. */
+    OBS_CURRENT_TRANSITION = "obs_current_transition",
+    /** Last replay buffer save path. Use as {{obs_last_replay_buffer_path}}. */
+    OBS_LAST_REPLAY_BUFFER_PATH = "obs_last_replay_buffer_path",
+    /** Last vertical backtrack save path. Use as {{obs_last_vertical_backtrack_path}}. */
+    OBS_LAST_VERTICAL_BACKTRACK_PATH = "obs_last_vertical_backtrack_path",
+    /** Current scene. Use as {{slobs_current_scene}}. */
+    SLOBS_CURRENT_SCENE = "slobs_current_scene",
+    /** Previous scene. Use as {{slobs_previous_scene}}. */
+    SLOBS_PREVIOUS_SCENE = "slobs_previous_scene",
+    /** Current scene collection. Use as {{slobs_current_scene_collection}}. */
+    SLOBS_CURRENT_SCENE_COLLECTION = "slobs_current_scene_collection",
+    /** Is streaming (true/false). Use as {{meld_is_streaming}}. */
+    MELD_IS_STREAMING = "meld_is_streaming",
+    /** Is recording (true/false). Use as {{meld_is_recording}}. */
+    MELD_IS_RECORDING = "meld_is_recording",
+    /** Current scene. Use as {{meld_current_scene}}. */
+    MELD_CURRENT_SCENE = "meld_current_scene",
+    /** Previous scene. Use as {{meld_previous_scene}}. */
+    MELD_PREVIOUS_SCENE = "meld_previous_scene",
+    /** Current vertical scene. Use as {{meld_current_vertical_scene}}. */
+    MELD_CURRENT_VERTICAL_SCENE = "meld_current_vertical_scene",
+    /** Previous vertical scene. Use as {{meld_previous_vertical_scene}}. */
+    MELD_PREVIOUS_VERTICAL_SCENE = "meld_previous_vertical_scene",
+    /** Last Streamer.bot action. Use as {{streamerbot_last_action}}. */
+    STREAMERBOT_LAST_ACTION = "streamerbot_last_action",
+    /** Current VTS model. Use as {{vtubestudio_current_model}}. */
+    VTUBESTUDIO_CURRENT_MODEL = "vtubestudio_current_model",
+    /** Current VTS background. Use as {{vtubestudio_current_background}}. */
+    VTUBESTUDIO_CURRENT_BACKGROUND = "vtubestudio_current_background",
+    /** Last VTS hotkey triggered. Use as {{vtubestudio_last_hotkey_triggered}}. */
+    VTUBESTUDIO_LAST_HOTKEY_TRIGGERED = "vtubestudio_last_hotkey_triggered",
+    /** Heart rate BPM (Pulsoid/Hyperate). Use as {{heartrate_bpm}}. */
+    HEARTRATE_BPM = "heartrate_bpm"
+}
+
+// <auto-generated-end name="SystemVariables" />
+
+examples.md
+# Custom Overlays Examples
+
+## Custom Alert
+
+### JS Code
+
+```js
+// Overlay.data is fetched from the sidebar input values
+const container = document.getElementById('container');
+
+// Pass data to css variable to use it easily inside css
+if (Overlay.data?.primaryColor) container.style.setProperty('--primary', Overlay.data?.primaryColor);
+if (Overlay.data?.backgroundColor) container.style.setProperty('--secondary', Overlay.data?.backgroundColor);
+if (Overlay.data?.messageBgColor) container.style.setProperty('--bg', Overlay.data?.messageBgColor);
+if (Overlay.data?.textColor) container.style.setProperty('--text', Overlay.data?.textColor);
+if (Overlay.data?.rounded) container.style.setProperty('--rounded', Overlay.data?.rounded);
+
+// Listen for alerts
+Overlay.on('alert', (data) => {
+	const alertType = data.alert;
+	const settings = data.extraSettings;
+	let fullMessage = '';
+
+	if (alertType.includes('donat')) {
+		fullMessage += `${settings?.username} just tipped ${settings?.amount ?? ''} ${settings?.currency ?? ''}`;
+	} else if (alertType.includes('follow')) {
+		fullMessage += `${settings?.username} is now following!`;
+	} else if (alertType.includes('firstChatter')) {
+		fullMessage += `${settings?.username} is the first chatter`;
+	} else if (alertType.includes('entrance')) {
+		fullMessage += `${settings?.username} Welcome`;
+	} else if (alertType.includes('subscriber')) {
+		fullMessage += `${settings?.username} just subscribed!`;
+	} else if (alertType.includes('bits')) {
+		fullMessage += `${settings?.username} cheered ${settings?.amount ?? ''} bits`;
+	}
+
+	if (settings?.message) fullMessage += ` They said ${settings?.message}`;
+
+	// Display the alert inside the HTML container
+	document.getElementById('alert-container').innerHTML = `<div class="message-container"><img src="${settings?.avatar}" id="avatar"/> ${fullMessage}</div>`;
+});
+```
+
+### HTML
+
+```html
+<div id="container">
+	<h1>Custom Alert</h1>
+	<div id="alert-container"></div>
+</div>
+```
+
+### CSS Styling
+
+```css
+#container {
+	--primary: #ff4076;
+	--secondary: #393853;
+	--bg: #12111d;
+	--text: #ffffff;
+	--rounded: 10px;
+	font-family: 'Courier New', Courier, monospace;
+	background-color: var(--secondary);
+	color: var(--text);
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 1rem;
+	border-radius: var(--rounded);
+}
+
+#container h1 {
+	color: var(--primary);
+	text-align: center;
+}
+
+#alert-container {
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+#alertImage {
+	width: 150px;
+}
+.message-container {
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	gap: 0.5rem;
+}
+#avatar {
+	background: var(--secondary);
+	border-radius: 100px;
+	height: 32px;
+	aspect-ratio: 1 / 1;
+}
+```
+
+### Configs
+
+```json
+{
+	"primaryColor": {
+		"type": "colorpicker",
+		"label": "Primary color:",
+		"order": 1
+	},
+	"backgroundColor": {
+		"type": "colorpicker",
+		"label": "Background color:",
+		"order": 2
+	},
+	"textColor": {
+		"type": "colorpicker",
+		"label": "Text color:",
+		"order": 3
+	},
+	"rounded": {
+		"type": "input",
+		"label": "Rounded corners:",
+		"order": 4
+	},
+	"alertImage": {
+		"type": "input",
+		"label": "Alert image URL:",
+		"order": 5
+	}
+}
+```
+
+### Data
+
+```json
+{
+	"primaryColor": "#ff4076",
+	"backgroundColor": "#393853",
+	"textColor": "#ffffff",
+	"messageBgColor": "#12111d",
+	"rounded": "10px",
+	"alertImage": "https://storage.lumiastream.com/overlays/2/946e20c5-35da-44f6-94cb-fe833c71d10b.gif"
+}
+```
+
+## Custom Chat Box
+
+### JS Code
+
+```js
+// Overlay.data is fetched from the sidebar input values
+const messageContainer = document.getElementById('container');
+
+// Pass data to css variable to use it easily inside css
+if (Overlay.data?.primaryColor) messageContainer.style.setProperty('--primary', Overlay.data?.primaryColor);
+if (Overlay.data?.backgroundColor) messageContainer.style.setProperty('--secondary', Overlay.data?.backgroundColor);
+if (Overlay.data?.messageBgColor) messageContainer.style.setProperty('--bg', Overlay.data?.messageBgColor);
+if (Overlay.data?.textColor) messageContainer.style.setProperty('--text', Overlay.data?.textColor);
+if (Overlay.data?.rounded) messageContainer.style.setProperty('--rounded', Overlay.data?.rounded);
+
+// Listen for chat messages
+Overlay.on('chat', (data) => {
+	const origin = data.origin;
+
+	// Append the chat messages to the HTML container
+	document.getElementById(
+		'messages-container',
+	).innerHTML += `<div class="message" id="message"><span id="origin">From ${origin}</span><img src="${data.avatar}" id="avatar"/><label id="username">${data.username}:</label><div id="content">${data.message}</div></div>`;
+});
+```
+
+### CSS Styling
+
+```css
+#container {
+	--primary: #ff4076;
+	--secondary: #393853;
+	--bg: #12111d;
+	--text: #ffffff;
+	--rounded: 10px;
+	font-family: 'Courier New', Courier, monospace;
+	background-color: var(--secondary);
+	color: var(--text);
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 1rem;
+	border-radius: var(--rounded);
+}
+#container h1 {
+	color: var(--primary);
+	text-align: center;
+}
+.messages-container {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+.message {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0 1rem;
+	background: var(--bg);
+	border-radius: 10px;
+}
+#avatar {
+	background: var(--secondary);
+	border-radius: 100px;
+	height: 32px;
+	aspect-ratio: 1 / 1;
+}
+```
+
+### Configs
+
+```json
+{
+  "primaryColor": {
+    "type": "colorpicker",
+    "label": "Primary color:",
+    "order": 1
+  },
+  "backgroundColor": {
+    "type": "colorpicker",
+    "label": "Background color:",
+    "order": 2
+  },
+  "textColor": {
+    "type": "colorpicker",
+    "label": "Text color:",
+    "order": 3
+  },
+  "messageBgColor": {
+    "type": "colorpicker",
+    "label": "Message background color:",
+    "order": 4
+  },
+  "rounded": {
+    "type": "input",
+    "label": "Rounded corners:",
+    "order": 5
+  }
+}
+```
+
+### Data
+
+```json
+{
+	"primaryColor": "#ff4076",
+	"backgroundColor": "#393853",
+	"textColor": "#ffffff",
+	"messageBgColor": "#12111d",
+	"rounded": "10px"
+}
+```
+
+---
+
+## Calculator with overlaySendCustomContent from Lumia Stream
+
+To create a calculator we need to take in data from Lumia Stream, so we will need Overlay Actions or Custom Code. This calculator also has a TTS option
+
+### Command Custom JS Code from Lumia Stream
+
+This will take in a message from chat like a number or math operator and send it to the overlay with the codeId of `calculator`
+
+```js
+async function() {
+  overlaySendCustomContent({ codeId: "calculator", content: "{{message}}" });
+  // Make sure you call done() to avoid memory leaks
+  done();
+}
+```
+
+### JS Code
+
+```js
+const calcEl = document.getElementById('calc-container');
+const exprEl = document.getElementById('expression');
+const resultEl = document.getElementById('result');
+
+// Apply colors from sidebar
+if (data.primaryColor) calcEl.style.setProperty('--primary', data.primaryColor);
+if (data.backgroundColor) calcEl.style.setProperty('--background', data.backgroundColor);
+
+let tokens = [];
+let showingResult = false;
+
+const IDLE_MS = data.idleTimeout ?? 20000;
+let idleTimer = null;
+
+function resetIdleTimer() {
+	clearTimeout(idleTimer);
+	idleTimer = setTimeout(() => {
+		tokens = [];
+		resultEl.textContent = '';
+		render();
+	}, IDLE_MS);
+}
+
+function speak(text, opts = {}) {
+	if (!data.tts) return;
+	const u = new SpeechSynthesisUtterance(text);
+	Object.assign(u, opts); // voice, rate, pitch, lang, etc.
+	window.speechSynthesis.cancel(); // stop anything currently talking
+	window.speechSynthesis.speak(u);
+}
+
+function verbalize(token) {
+	switch (token) {
+		case '+':
+			return 'plus';
+		case '-':
+			return 'minus';
+		case '*':
+			return 'times';
+		case '/':
+			return 'divided by';
+		case '=':
+			return 'equals';
+		default:
+			return token; // numbers & anything else
+	}
+}
+
+function render() {
+	exprEl.innerHTML = tokens.map((t) => (/^[0-9.]+$/.test(t) ? `<span class="token number">${t}</span>` : `<span class="token op">${t}</span>`)).join(' ');
+}
+
+function evaluate() {
+	const raw = tokens.join(' ');
+	try {
+		const safe = raw.replace(/[^0-9+\-*/.() ]/g, '');
+		const total = Function(`"use strict"; return (${safe})`)();
+
+		resultEl.textContent = '= ' + total;
+
+		// 🔊 read the answer
+		speak(`equals ${String(total)}`); // “forty-two”, “3.14159”, …
+	} catch {
+		resultEl.textContent = 'Error';
+		speak('Error');
+	}
+	showingResult = true;
+}
+
+Overlay.on('overlaycontent', (data) => {
+	const content = data.content;
+
+	// After displaying a result, any new token starts a new expression
+	if (showingResult) {
+		tokens = [];
+		resultEl.textContent = '';
+		showingResult = false;
+	}
+
+	// Clear
+	if (content === 'C') {
+		tokens = [];
+		resultEl.textContent = '';
+		speak('Clear');
+		render();
+		return;
+	}
+
+	// Evaluate
+	if (content === '=') {
+		if (tokens.length) evaluate();
+		return;
+	}
+
+	// Numbers (build multi-digit) vs operators
+	if (/^[0-9.]$/.test(content)) {
+		if (tokens.length && /^[0-9.]+$/.test(tokens.at(-1))) {
+			tokens[tokens.length - 1] += content; // extend current number
+			// speak(tokens[tokens.length - 1]);
+		} else {
+			tokens.push(content);
+			speak(verbalize(content));
+		}
+	} else if (/^[+\-*/]$/.test(content)) {
+		// If previous token is also an operator, overwrite it
+		if (tokens.length && /^[+\-*/]$/.test(tokens.at(-1))) {
+			tokens[tokens.length - 1] = content;
+		} else {
+			tokens.push(content);
+		}
+		speak(verbalize(content));
+	}
+	render();
+});
+```
+
+### HTML
+
+```html
+<div id="calc-container">
+	<div id="expression"></div>
+	<div id="result"></div>
+</div>
+```
+
+### CSS
+
+```css
+/* Big, bold, colourful ✨ */
+@import url('https://fonts.googleapis.com/css2?family=Fredoka+One&display=swap');
+
+#calc-container {
+	--bg: var(--background, #fff6d6);
+	--border: var(--primary, #ff90e8);
+	--pad: min(2vw, 20px);
+
+	font-family: 'Fredoka One', system-ui, sans-serif;
+	background: var(--bg);
+	border: 6px solid var(--border);
+	border-radius: 25px;
+	padding: var(--pad);
+	filter: drop-shadow(0 0 10px #0003);
+}
+
+#expression,
+#result {
+	line-height: 1.2;
+	letter-spacing: 0.06em;
+	word-break: break-all;
+	/* huge on widescreen, scale down on mobile */
+	font-size: clamp(40px, 6vw, 80px);
+	text-align: center;
+}
+
+#expression span.token.number {
+	color: #ff595e; /* watermelon */
+}
+#expression span.token.op {
+	color: #1982c4; /* sky */
+}
+
+#result {
+	margin-top: 0.2em;
+	color: #8ac926; /* lime */
+}
+```
+
+### Configs
+
+```json
+{
+  "tts": {
+    "type": "checkbox",
+    "label": "TTS",
+    "order": 1,
+    "value": false
+  },
+  "ttsVoice": {
+    "type": "input",
+    "label": "TTS Voice",
+    "order": 2,
+    "visibleIf": {
+      "key": "tts",
+      "equals": true
+    }
+  },
+  "idleTimeout": {
+    "type": "number",
+    "label": "Auto-clear after (ms)",
+    "order": 3,
+    "value": 20000,
+    "min": 5000,
+    "step": 1000
+  },
+  "primaryColor": {
+    "type": "colorpicker",
+    "label": "Text / border colour",
+    "order": 4,
+    "value": "#ffffff"
+  },
+  "backgroundColor": {
+    "type": "colorpicker",
+    "label": "Background colour",
+    "order": 5,
+    "value": "#00000080"
+  }
+}
+```
+
+### Data
+
+```json
+{
+	"tts": true,
+	"idleTimeout": 20000,
+	"primaryColor": "#00000000",
+	"backgroundColor": "#00000000"
+}
+```
+
+## Roll a Dice
+
+### JS Code
+
+```js
+const die = document.getElementById('die');
+const HIDE_MS = data.hideDelay ?? 5000;
+let hideT = null;
+let min = 1;
+let max = 6;
+
+function showDie() {
+	die.classList.remove('hidden');
+	clearTimeout(hideT);
+	hideT = setTimeout(() => die.classList.add('hidden'), HIDE_MS);
+}
+
+Overlay.on('chat', (data) => {
+	const message = data.message?.trim().toLowerCase();
+	const username = data.username ?? 'Someone';
+	if (message !== '!roll') return;
+
+	const v = min + Math.floor(Math.random() * (max - min + 1));
+
+	// restart spin animation
+	die.style.animation = 'none';
+	void die.offsetWidth;
+	die.style.animation = `spin var(--roll-ms) cubic-bezier(.26,.88,.37,.99)`;
+
+	// reveal value after spin
+	setTimeout(() => {
+		die.textContent = v;
+	}, data.rollDuration);
+
+	// make it visible & schedule hide
+	showDie();
+});
+
+// hide die on first load
+die.classList.add('hidden');
+```
+
+### HTML
+
+```html
+<div id="die" class="die">🎲</div>
+```
+
+### CSS Styling
+
+```css
+:root {
+	--size: 90px; /* die size */
+	--roll-ms: 900ms; /* spin length */
+	--dot-color: #fff;
+}
+
+.die {
+	width: var(--size);
+	height: var(--size);
+	display: grid;
+	place-content: center;
+	font-size: calc(var(--size) * 0.55);
+	color: var(--dot-color);
+	background: #0008;
+	border-radius: 12%;
+	user-select: none;
+	animation: none;
+}
+
+.die.hidden {
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 0.3s ease;
+}
+.die {
+	transition: opacity 0.3s ease;
+}
+
+/* single-run spin animation */
+@keyframes spin {
+	0% {
+		transform: rotateX(0) rotateY(0);
+	}
+	70% {
+		transform: rotateX(3turn) rotateY(4turn);
+	}
+	100% {
+		transform: rotateX(3turn) rotateY(4turn);
+	}
+}
+```
+
+### Configs
+
+```json
+{
+  "dotColor": {
+    "type": "colorpicker",
+    "label": "Dice text colour",
+    "order": 1,
+    "value": "#ffffff"
+  },
+  "rollDuration": {
+    "type": "number",
+    "label": "Spin time (ms)",
+    "order": 2,
+    "value": 900
+  },
+  "hideDelay": {
+    "type": "number",
+    "label": "Auto-hide after (ms)",
+    "order": 3,
+    "value": 5000
+  }
+}
+```
+
+### Data
+
+```json
+{
+	"dotColor": "#ffffff",
+	"hideDelay": 5000,
+	"rollDuration": 900
+}
+```
+
+## Pokemon Catch Mini-Game Overlay
+
+### JS Code
+
+```js
+/* ------------------------------------------------------------------
+   0. CONFIG  (editable in “Configs” / “Data” tabs)
+------------------------------------------------------------------*/
+const cfg = {
+	catchCommand: Overlay.data?.catchCommand || '!catch',
+	leaderboardCommand: Overlay.data?.leaderboardCommand || '!leader',
+	pokedexCommand: Overlay.data?.pokedexCommand || '!pokedex',
+	minSpawnSec: Number(Overlay.data?.minSpawn) || 40,
+	maxSpawnSec: Number(Overlay.data?.maxSpawn) || 60,
+	captureMsgMs: Number(Overlay.data?.msgMs) || 7000,
+	maxDex: Number(Overlay.data?.maxDex) || 151,
+	volume: Number(Overlay.data?.volume) || 0.3,
+	shinyRate: Number(Overlay.data?.shinyRate) || 2,
+	catchSuccess: Number(Overlay.data?.catchPct) || 50,
+	fleeChance: Number(Overlay.data?.fleePct) || 15,
+	idleFleeSec: Number(Overlay.data?.idleSec) || 15,
+	disableChat: Boolean(Overlay.data?.disableChat),
+	devMode: Boolean(Overlay.data?.devMode),
+};
+
+/* ------------------------------------------------------------------
+   1. DOM handles
+------------------------------------------------------------------*/
+const imgPoke = document.getElementById('pokemon-image');
+const imgBall = document.getElementById('pokeball-image');
+const msgEl = document.getElementById('message');
+const boardList = document.getElementById('board-list');
+const modalDex = document.getElementById('pokedex');
+const dexMsgEl = document.getElementById('pokedex-message');
+const dexImgsEl = document.getElementById('pokedex-images');
+const sfxSpawn = document.getElementById('spawn-sound');
+const sfxCatch = document.getElementById('catch-sfx');
+const sfxThrow = document.getElementById('throw-sfx');
+
+/* ------------------------------------------------------------------
+   2. Global state
+------------------------------------------------------------------*/
+let game = { cur: null, catchable: false, anim: false, idleT: null, spawnT: null };
+let msgTimer = null;
+let leaderboardTimer = null;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const BALL_POWER = {
+	regular: 0, // baseline cfg.catchSuccess
+	great: +20, // +20 %
+	ultra: +40, // +40 %
+	master: 100, // always catches
+};
+
+const BALL_SPRITE = {
+	regular: 'https://storage.lumiastream.com/overlays/2/8f20685a-21f2-4f11-a0cf-2571ed3a65f3.png',
+	great: 'https://storage.lumiastream.com/overlays/2/92177744-1de7-4605-8a26-5c03ff2257cf.png',
+	ultra: 'https://storage.lumiastream.com/overlays/2/c8efaa7b-e983-4706-ad46-33e0ee547846.png',
+	master: 'https://storage.lumiastream.com/overlays/2/4cb9dbe2-6e9a-451b-bb11-20044011c9b5.png',
+};
+
+/* ------------------------------------------------------------------
+   3. Leaderboard helpers  (Lumia Variables)
+------------------------------------------------------------------*/
+async function load() {
+	const raw = await Overlay.getVariable('pokemon_leaderboard');
+	try {
+		return raw ? JSON.parse(raw) : {};
+	} catch {
+		return {};
+	}
+}
+
+async function save(data) {
+	await Overlay.setVariable('pokemon_leaderboard', JSON.stringify(data));
+}
+
+async function incrementUser(user, pokeName, isShiny) {
+	const board = await load();
+	if (!board[user]) board[user] = { total: 0, shiny: 0, list: [] };
+
+	board[user].total++;
+	if (isShiny) board[user].shiny++;
+	board[user].list.push({ name: pokeName, shiny: isShiny });
+
+	await save(board);
+}
+
+/* ------------------------------------------------------------------
+   4. Pokémon fetcher  (forceId / forceShiny overrides)
+------------------------------------------------------------------*/
+async function fetchPokemon({ forceId = null, forceShiny = null } = {}) {
+	const id = forceId ?? Math.floor(Math.random() * cfg.maxDex) + 1;
+	try {
+		const data = await fetch(`https://pokeapi.co/api/v2/pokemon/${id}`).then((r) => r.json());
+		const shiny = forceShiny ?? Math.random() * 100 < cfg.shinyRate;
+
+		return {
+			id,
+			name: data.name.charAt(0).toUpperCase() + data.name.slice(1),
+			sprite: shiny ? data.sprites.front_shiny : data.sprites.front_default,
+			cry: data.cries.latest || data.cries.legacy,
+			shiny,
+		};
+	} catch {
+		return null;
+	}
+}
+
+/* ------------------------------------------------------------------
+   5. Game flow
+------------------------------------------------------------------*/
+function showMessage(txt = '', ms = 0) {
+	clearTimeout(msgTimer);
+
+	if (txt) {
+		msgEl.textContent = txt;
+		msgEl.classList.remove('hidden'); // <-- make sure you have a `.hidden` css rule
+	} else {
+		msgEl.textContent = '';
+		msgEl.classList.add('hidden');
+	}
+
+	if (ms > 0) {
+		msgTimer = setTimeout(() => showMessage('', 0), ms);
+	}
+}
+
+function scheduleSpawn() {
+	clearTimeout(game.spawnT);
+	const delay = (Math.random() * (cfg.maxSpawnSec - cfg.minSpawnSec) + cfg.minSpawnSec) * 1000;
+	game.spawnT = setTimeout(() => spawn(), delay);
+}
+
+async function spawn(overrides = {}) {
+	if (game.cur || game.anim) return;
+	game.anim = true;
+
+	imgBall.className = 'hidden';
+	imgPoke.className = 'hidden';
+
+	const p = await fetchPokemon(overrides);
+	if (!p) {
+		game.anim = false;
+		scheduleSpawn();
+		return;
+	}
+
+	game.cur = p;
+	imgPoke.src = p.sprite;
+	showMessage(p.shiny ? `✨ A SHINY ${p.name.toUpperCase()} appeared!` : `A wild ${p.name} appeared!`, 0);
+	game.catchable = true;
+
+	/* cry */
+	if (p.cry && cfg.volume > 0) {
+		sfxSpawn.src = p.cry;
+		sfxSpawn.volume = Math.min(1, Math.max(0, cfg.volume));
+		sfxSpawn.play().catch(() => {});
+	}
+
+	imgPoke.classList.remove('hidden');
+	imgPoke.classList.add('spawned');
+
+	setTimeout(() => {
+		game.anim = false;
+		showMessage(`${p.name} appeared! Type ${cfg.catchCommand} to catch it!`, 0);
+	}, 1500);
+
+	/* boredom flee */
+	clearTimeout(game.idleT);
+	game.idleT = setTimeout(() => {
+		if (game.cur && !game.anim) {
+			showMessage(`${game.cur.name} got bored and fled! 💨`, 3000); // 👈 3 s
+			despawn();
+		}
+	}, cfg.idleFleeSec * 1000);
+}
+
+/* ------------------------------------------------------------------
+   Attempt a capture
+   @param {string} username – display name
+   @param {string} origin   – 'kick' | 'twitch' | 'youtube' | 'discord'
+   @param {string} ballType – 'regular' | 'great' | 'ultra' | 'master'
+------------------------------------------------------------------*/
+async function tryCatch({ username, origin = 'twitch', ballType = 'regular' }) {
+	if (!game.catchable || game.anim) return; // nothing to catch
+
+	/* ---------- pre-throw setup ---------- */
+	game.anim = true;
+	game.catchable = false;
+
+	// Capitalise the label used in the UI message
+	const ballLabel = ballType.charAt(0).toUpperCase() + ballType.slice(1);
+
+	showMessage(`${username} threw a ${ballLabel} Ball!`, 0);
+	imgBall.src = BALL_SPRITE[ballType] || BALL_SPRITE.regular;
+	imgBall.className = 'start-capture-sequence';
+
+	// SFX
+	sfxThrow.currentTime = 0;
+	sfxThrow.volume = Math.min(1, Math.max(0, cfg.volume));
+	sfxThrow.play().catch(() => {});
+
+	setTimeout(() => imgPoke.classList.add('hidden'), 700);
+	await sleep(5000);
+	imgBall.className = 'hidden';
+
+	/* ---------- success roll ---------- */
+	let success;
+	if (ballType === 'master') {
+		success = true; // Master Ball never fails
+	} else {
+		const bonus = BALL_POWER[ballType] ?? 0; // fall back to 0
+		const chance = Math.min(100, cfg.catchSuccess + bonus);
+		success = Math.random() * 100 < chance;
+	}
+
+	/* ---------- outcome ---------- */
+	if (success) {
+		// -------------------- catch! --------------------
+		sfxCatch.currentTime = 0;
+		sfxCatch.volume = Math.min(1, Math.max(0, cfg.volume));
+		sfxCatch.play().catch(() => {});
+		showMessage(`Gotcha! ${username} caught ${game.cur.name}! 🎉`, 3000);
+		Overlay.chatbot({
+			message: `Gotcha! ${username} caught ${game.cur.name}! 🎉`,
+			platform: origin,
+			chatAsSelf: false,
+		});
+
+		await incrementUser(username.toLowerCase(), game.cur.name, game.cur.shiny);
+
+		await sleep(cfg.captureMsgMs);
+		despawn();
+	} else {
+		// -------------------- broke free --------------------
+		showMessage(`${game.cur.name} broke free!`, 5000);
+
+		imgPoke.classList.remove('hidden'); // show Pokémon again
+
+		/* restart the idle-flee timer */
+		clearTimeout(game.idleT);
+		game.idleT = setTimeout(() => {
+			if (game.cur && !game.anim) {
+				showMessage(`${game.cur.name} got bored and fled! 💨`, 5000);
+				despawn();
+			}
+		}, cfg.idleFleeSec * 1000);
+
+		game.catchable = true;
+		game.anim = false;
+	}
+}
+
+function despawn() {
+	clearTimeout(game.idleT);
+	imgBall.classList.add('hidden');
+	imgPoke.classList.add('hidden');
+	game = { cur: null, catchable: false, anim: false, idleT: null, spawnT: null };
+	showMessage();
+	scheduleSpawn();
+}
+
+/* ------------------------------------------------------------------
+   6. Pokédex pop-up  (reads leaderboard data)
+------------------------------------------------------------------*/
+async function showPokedex(username = 'Someone') {
+	const all = await load();
+	const entry = all[username.toLowerCase()] || { list: [] };
+	const list = entry.list;
+
+	dexMsgEl.textContent = list.length ? `${username} has caught ${list.length} / ${cfg.maxDex}` : `${username} hasn’t caught anything yet.`;
+
+	dexImgsEl.innerHTML = list
+		.map((p) => {
+			const slug = p.name.toLowerCase().replace(/♀/g, 'f').replace(/♂/g, 'm').replace(/[.'’]/g, '').replace(/\s+/g, '-');
+			const src = `https://img.pokemondb.net/sprites/home/${p.shiny ? 'shiny' : 'normal'}/${slug}.png`;
+			return `<img class="poke${p.shiny ? ' shiny' : ''}" src="${src}" alt="${p.name}">`;
+		})
+		.join('');
+
+	modalDex.classList.remove('hidden');
+	setTimeout(() => modalDex.classList.add('hidden'), 10000);
+}
+
+async function showLeaderboard() {
+	clearTimeout(leaderboardTimer);
+	const board = await load();
+	const list = Object.entries(board)
+		.sort((a, b) => b[1].total - a[1].total)
+		.slice(0, 10);
+
+	boardList.innerHTML = list.length
+		? list
+				.map(([u, d]) => {
+					const tip = d.list.map((p) => (p.shiny ? `${p.name} ⭐` : p.name)).join(', ');
+					return `<li>
+            <span class="user" title="${tip}">${u}</span>
+            <span>${d.total}${d.shiny ? ` ⭐${d.shiny}` : ''}</span>
+          </li>`;
+				})
+				.join('')
+		: '<li>No catches yet</li>';
+
+	boardList.classList.remove('hidden');
+
+	leaderboardTimer = setTimeout(() => {
+		boardList.classList.add('hidden');
+	}, 10000);
+}
+
+/* ------------------------------------------------------------------
+   7. Chat listeners
+------------------------------------------------------------------*/
+const handleListener = ({ command, username, ballType, origin }) => {
+	if (command === cfg.catchCommand) tryCatch({ username, origin, ballType });
+	if (command === cfg.leaderboardCommand) showLeaderboard();
+	if (command === cfg.pokedexCommand) showPokedex(username);
+};
+
+if (!cfg.disableChat) {
+	Overlay.on('chat', (data) => {
+		handleListener({ command: data.message?.trim(), username: data.username, ballType: 'regular', origin: data.origin });
+	});
+}
+
+// Manual Listeners from Lumia
+Overlay.on('overlaycontent', (data) => {
+	const { command, username, ballType } = JSON.parse(data.content);
+	handleListener({ command, username, ballType, origin: data.origin });
+});
+
+/* ------------------------------------------------------------------
+   8. Developer helpers (keyboard + console)
+------------------------------------------------------------------*/
+if (cfg.devMode) {
+	console.info('[Poké-Overlay] Dev-mode ON  –  S:spawn  ⇧S:shiny  R:rare  C:catch  M:Master  P:pokedex  L:leaderboard');
+
+	/* onscreen cheat-sheet */
+	const hint = document.getElementById('debug-hints');
+	if (hint) {
+		hint.innerHTML = 'Dev-mode: <kbd>S</kbd> Spawn • <kbd>⇧S</kbd> Shiny • <kbd>R</kbd> Rare • ' + '<kbd>C</kbd> Catch • <kbd>M</kbd> Masterball • <kbd>P</kbd> Pokédex • <kbd>L</kbd> Leaderboard';
+		hint.classList.remove('hidden');
+	}
+
+	/* helpers */
+	const rareIds = [144, 145, 146, 150, 151];
+	const spawnShiny = () => spawn({ forceShiny: true });
+	const spawnRare = () => spawn({ forceId: rareIds[Math.floor(Math.random() * rareIds.length)] });
+
+	window.debug = {
+		spawn,
+		spawnShiny,
+		spawnRare,
+		tryCatch,
+		showPokedex,
+		showLeaderboard,
+		state: async () => ({ game, board: await load() }),
+	};
+
+	window.addEventListener('keydown', (e) => {
+		if (e.repeat) return;
+		const k = e.key.toLowerCase();
+		if (k === 's' && e.shiftKey) return spawnShiny();
+		if (k === 's') return spawn();
+		if (k === 'r') return spawnRare();
+		if (k === 'c') return tryCatch({ username: 'Dev' });
+		if (k === 'm') return tryCatch({ username: 'Dev', ballType: 'master' });
+		if (k === 'l') return showLeaderboard();
+		if (k === 'p') return showPokedex('Dev');
+	});
+}
+
+/* ------------------------------------------------------------------
+   9. Boot
+------------------------------------------------------------------*/
+// Give it a little time for variables to make it in
+setTimeout(async () => {
+	// Sets the initial pokeball sprite
+	imgBall.src = BALL_SPRITE.regular;
+	scheduleSpawn();
+	showLeaderboard();
+}, 1000);
+```
+
+### HTML
+
+```html
+<div class="container">
+	<!-- Game area -->
+	<div id="game-area">
+		<img id="pokemon-image" class="hidden" alt="Pokémon" />
+		<img id="pokeball-image" class="hidden" alt="Poké Ball" />
+		<p id="message"></p>
+	</div>
+
+	<!-- Leaderboard -->
+	<ul id="board-list"></ul>
+
+	<!-- Sounds -->
+	<audio id="spawn-sound" preload="auto"></audio>
+	<audio id="catch-sfx" preload="auto"><source src="https://storage.lumiastream.com/overlays/1/1c3c7e1a-da7b-4b3c-8efa-d5792f5d7011.mp3" type="audio/mpeg" /></audio>
+	<audio id="throw-sfx" preload="auto"><source src="https://storage.lumiastream.com/overlays/1/5e8753b9-1b9b-41be-ba20-27af95282e62.wav" type="audio/mpeg" /></audio>
+
+	<!-- Pokédex pop-up -->
+	<div id="pokedex" class="pokedex-container hidden">
+		<div id="pokedex-message"></div>
+		<div id="pokedex-images"></div>
+	</div>
+
+	<!-- Dev-mode cheat-sheet (shown only when devMode = true) -->
+	<div id="debug-hints" class="debug-hints hidden">
+		Dev-mode:&nbsp;<kbd>S</kbd> Spawn&nbsp;•&nbsp;<kbd>⇧S</kbd> Shiny&nbsp;•&nbsp; <kbd>R</kbd> Rare&nbsp;•&nbsp;<kbd>C</kbd> Catch&nbsp;•&nbsp;<kbd>P</kbd> Pokédex
+	</div>
+</div>
+```
+
+### CSS Styling
+
+```css
+/* ------------------------------------------------------------------
+   0. Font
+------------------------------------------------------------------*/
+@font-face {
+	font-family: 'PokemonRBY';
+	src: url('https://db.onlinewebfonts.com/t/65780863e7302fe257df982341d6a1cb.woff2') format('woff2'), url('https://db.onlinewebfonts.com/t/65780863e7302fe257df982341d6a1cb.woff') format('woff'),
+		url('https://db.onlinewebfonts.com/t/65780863e7302fe257df982341d6a1cb.ttf') format('truetype');
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+/* ------------------------------------------------------------------
+   1. Layout
+------------------------------------------------------------------*/
+html,
+body {
+	height: 100%;
+	width: 100%;
+	margin: 0;
+	font-family: 'PokemonRBY', sans-serif;
+	overflow: hidden;
+}
+
+.container {
+	position: relative;
+	width: 100%;
+	height: 100%;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+}
+
+#game-area {
+	position: relative; /* → origin for absolute Poké-ball */
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+
+/* ------------------------------------------------------------------
+   2. Pokémon & ball
+------------------------------------------------------------------*/
+#pokemon-image {
+	width: 250px;
+	height: 250px;
+	object-fit: contain;
+	transition: opacity 0.5s ease, transform 0.5s ease;
+	image-rendering: pixelated;
+	z-index: 10;
+}
+
+#pokeball-image {
+	position: absolute;
+	/* centred on the sprite before animation starts */
+	top: calc(50% - 125px);
+	left: 50%;
+	transform: translate(-50%, -50%) scale(0);
+	transform-origin: center center;
+	opacity: 0;
+	visibility: hidden;
+	z-index: 20;
+	pointer-events: none;
+}
+
+/* ------------------------------------------------------------------
+   3. Message text
+------------------------------------------------------------------*/
+#message {
+	text-align: center;
+	color: #ffcb05;
+	font-size: 28px;
+	letter-spacing: 2px;
+	margin-top: 10px;
+	text-shadow: 3px 3px 0 #3a5b8a, -3px 3px 0 #3a5b8a, 3px -3px 0 #3a5b8a, -3px -3px 0 #3a5b8a;
+	height: 80px;
+}
+
+/* ------------------------------------------------------------------
+   4. Leaderboard
+------------------------------------------------------------------*/
+#board-list {
+	list-style: none;
+	margin: 0;
+	padding: 0 12px;
+	position: absolute;
+	top: 20px;
+	right: 20px;
+	background: rgba(0, 0, 0, 0.25);
+	backdrop-filter: blur(4px);
+	border-radius: 8px;
+	font-size: 18px;
+	color: white;
+}
+#board-list li {
+	display: flex;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 2px 0;
+	white-space: nowrap;
+}
+#board-list .user {
+	cursor: default;
+}
+#board-list span:last-child {
+	font-weight: bold;
+}
+
+/* ------------------------------------------------------------------
+   5. Pokédex pop-up
+------------------------------------------------------------------*/
+#pokedex {
+	position: absolute;
+	bottom: 30px;
+	right: 60px;
+	padding: 20px;
+	background: rgba(255, 255, 255, 0.8);
+	border-radius: 10px;
+	box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+
+	opacity: 0;
+	visibility: hidden;
+	transition: opacity 0.3s ease;
+}
+#pokedex:not(.hidden) {
+	opacity: 1;
+	visibility: visible;
+}
+
+.pokedex-message {
+	font-size: 24px;
+	color: #3a5b8a;
+	margin-bottom: 10px;
+}
+.pokedex-container img {
+	width: 50px;
+	height: 50px;
+	margin: 5px;
+}
+
+/* ------------------------------------------------------------------
+   6. Utility + animations
+------------------------------------------------------------------*/
+.hidden {
+	opacity: 0 !important;
+	visibility: hidden !important;
+	transform: scale(0) !important;
+}
+.spawned {
+	opacity: 1;
+	visibility: visible;
+	transform: scale(1);
+	animation: pulse 2.5s ease-in-out infinite;
+}
+.poke {
+	width: 80px;
+	margin: 4px;
+	image-rendering: crisp-edges;
+}
+.shiny {
+	filter: hue-rotate(45deg) brightness(1.3) saturate(1.2);
+}
+
+@keyframes pulse {
+	0%,
+	100% {
+		transform: scale(1);
+	}
+	50% {
+		transform: scale(1.05);
+	}
+}
+
+/* Throw + arc + shake + flash */
+@keyframes full-capture-sequence {
+	0% {
+		transform: translate(-50%, -50%) translate(-300px, 150px) scale(0.5) rotate(-200deg);
+		opacity: 0;
+	}
+	8% {
+		opacity: 1;
+	}
+	14% {
+		transform: translate(-50%, -50%) translate(0, -140px) scale(1.2) rotate(0deg);
+	}
+	24% {
+		transform: translate(-50%, -50%) translate(0, 0) scale(1);
+	}
+	35% {
+		transform: translate(-50%, -50%) rotate(-15deg);
+	}
+	45% {
+		transform: translate(-50%, -50%) rotate(15deg);
+	}
+	55% {
+		transform: translate(-50%, -50%) rotate(-15deg);
+	}
+	65% {
+		transform: translate(-50%, -50%) rotate(15deg);
+	}
+	75% {
+		transform: translate(-50%, -50%) rotate(-15deg);
+	}
+	85% {
+		transform: translate(-50%, -50%) rotate(15deg);
+	}
+	90% {
+		transform: translate(-50%, -50%) rotate(0deg);
+	}
+	100% {
+		transform: translate(-50%, -50%) rotate(0deg);
+		filter: drop-shadow(0 0 10px white);
+	}
+}
+
+.start-capture-sequence {
+	visibility: visible !important;
+	opacity: 1 !important;
+	animation: full-capture-sequence 5s ease-out forwards;
+}
+
+/* ------------------------------------------------------------------
+   7. Dev cheat-sheet bar
+------------------------------------------------------------------*/
+.debug-hints {
+	position: absolute;
+	bottom: 8px;
+	left: 50%;
+	transform: translateX(-50%);
+	background: rgba(0, 0, 0, 0.6);
+	color: #fff;
+	font-size: 14px;
+	padding: 4px 14px;
+	border-radius: 6px;
+	pointer-events: none;
+}
+.debug-hints kbd {
+	background: #333;
+	padding: 0 4px;
+	border-radius: 4px;
+	font-size: 13px;
+}
+```
+
+### Configs
+
+```json
+{
+  "catchCommand": {
+    "type": "input",
+    "label": "Catch command",
+    "order": 1,
+    "value": "!catch"
+  },
+  "pokedexCommand": {
+    "type": "input",
+    "label": "Pokedex command",
+    "order": 2,
+    "value": "!pokedex"
+  },
+  "leaderboardCommand": {
+    "type": "input",
+    "label": "Leaderboard command",
+    "order": 3,
+    "value": "!leader"
+  },
+  "disableChat": {
+    "type": "checkbox",
+    "label": "Disable chat input (Lumia only)",
+    "order": 4,
+    "value": false
+  },
+  "devMode": {
+    "type": "checkbox",
+    "label": "Developer mode (keyboard helpers)",
+    "order": 5,
+    "value": false
+  },
+  "minSpawn": {
+    "type": "number",
+    "label": "Spawn delay (min s)",
+    "order": 6,
+    "value": 40
+  },
+  "maxSpawn": {
+    "type": "number",
+    "label": "Spawn delay (max s)",
+    "order": 7,
+    "value": 60
+  },
+  "idleSec": {
+    "type": "number",
+    "label": "Flee time (s)",
+    "order": 8,
+    "value": 30
+  },
+  "fleePct": {
+    "type": "number",
+    "label": "Flee chance %",
+    "order": 9,
+    "value": 15
+  },
+  "catchPct": {
+    "type": "number",
+    "label": "Catch success %",
+    "order": 10,
+    "value": 40
+  },
+  "shinyRate": {
+    "type": "number",
+    "label": "Shiny rate %",
+    "order": 11,
+    "value": 2
+  },
+  "maxDex": {
+    "type": "number",
+    "label": "Highest Pokédex #",
+    "order": 12,
+    "value": 151
+  },
+  "volume": {
+    "type": "number",
+    "label": "SFX volume (0-1)",
+    "order": 13,
+    "value": 0.3
+  }
+}
+```
+
+### Data
+
+```json
+{
+	"maxDex": 151,
+	"volume": 0.3,
+	"devMode": false,
+	"fleePct": 15,
+	"idleSec": 30,
+	"catchPct": 40,
+	"maxSpawn": 120,
+	"minSpawn": 30,
+	"shinyRate": 2,
+	"disableChat": false,
+	"catchCommand": "!catch",
+	"pokedexCommand": "!pokedex",
+	"leaderboardCommand": "!leader"
+}
+```
+
+## Anime Facts using Fetch
+
+### JS Code
+
+```js
+/* ---------- Config ---------- */
+const DEFAULT_SECS = Number(Overlay.data.displaySecs) || 30;
+
+/* ---------- DOM handles ---------- */
+const wrapEl = document.getElementById('wrap');
+const coverEl = document.getElementById('cover');
+const quoteEl = document.getElementById('quote');
+const animeEl = document.getElementById('anime');
+const episodeEl = document.getElementById('episode');
+
+let hideTimer;
+
+/* ---------- Core ---------- */
+async function fetchQuote() {
+	// 1- Get random quote
+	const res = await fetch('https://api.animechan.io/v1/quotes/random');
+	const {
+		content,
+		anime: { id: animeId, name: animeName },
+		character: { name: charName },
+		episode,
+	} = (await res.json()).data;
+
+	quoteEl.textContent = `"${content}" — ${charName}`;
+	animeEl.textContent = animeName;
+
+	// 2- Episode info
+	if (episode) {
+		episodeEl.textContent = `Episode ${episode}`;
+	} else {
+		// fallback: total episode count from Animechan’s /anime/<id>
+		try {
+			const info = await fetch(`https://api.animechan.io/v1/anime/${animeId}`).then((r) => r.json());
+			episodeEl.textContent = `${info.data.episodeCount} eps`;
+		} catch {
+			episodeEl.textContent = 'Episode ?';
+		}
+	}
+
+	// 3- Cover via Jikan
+	try {
+		const jikan = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(animeName)}&limit=1`).then((r) => r.json());
+		coverEl.src = jikan.data?.[0]?.images?.jpg?.large_image_url || jikan.data?.[0]?.images?.jpg?.image_url || 'https://storage.lumiastream.com/placeholderLogo.png';
+	} catch {
+		coverEl.src = 'https://storage.lumiastream.com/placeholderLogo.png';
+	}
+}
+
+function showOverlay() {
+	clearTimeout(hideTimer);
+	wrapEl.classList.remove('hidden');
+	fetchQuote();
+	hideTimer = setTimeout(() => wrapEl.classList.add('hidden'), DEFAULT_SECS * 1000);
+}
+
+/* ---------- Event bridge from Lumia ---------- */
+Overlay.on('chat', (data) => {
+	console.log('Chat');
+	if (data.message === '!fact') {
+		showOverlay();
+	}
+});
+
+showOverlay();
+```
+
+### HTML
+
+```html
+<div id="wrap" class="hidden">
+	<img id="cover" />
+	<blockquote id="quote"></blockquote>
+	<p id="meta"><span id="anime"></span> • <span id="episode"></span></p>
+</div>
+```
+
+### CSS Styling
+
+```css
+#wrap {
+  --bg: {{backgroundColor}};
+  --primary: {{primaryColor}};
+  --text: {{textColor}};
+  font-family: "Segoe UI", Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding: 1rem;
+  border-radius: 10px;
+  max-width: 480px;
+  text-align: center;
+}
+
+#wrap.hidden { display: none; }
+
+#cover {
+  width: 100%;
+  max-height: 260px;
+  object-fit: cover;
+  border-radius: 6px;
+  margin-bottom: 0.8rem;
+}
+
+blockquote {
+  font-size: 1.1rem;
+  margin: .5rem 0;
+  color: var(--primary);
+}
+
+#meta { font-size: .9rem; opacity: .8; }
+```
+
+### Configs
+
+```json
+{
+  "displaySecs": {
+    "type": "number",
+    "label": "Display time (sec)",
+    "order": 1,
+    "value": 30,
+    "min": 5,
+    "max": 120
+  },
+  "primaryColor": {
+    "type": "colorpicker",
+    "label": "Accent colour",
+    "order": 2,
+    "value": "#ff577f"
+  },
+  "textColor": {
+    "type": "colorpicker",
+    "label": "Text colour",
+    "order": 3,
+    "value": "#ffffff"
+  },
+  "backgroundColor": {
+    "type": "colorpicker",
+    "label": "Background",
+    "order": 4,
+    "value": "#1e1e2f"
+  }
+}
+```
+
+### Data
+
+```json
+{
+	"textColor": "#ffffff",
+	"displaySecs": 30,
+	"primaryColor": "#ff577f",
+	"backgroundColor": "#1e1e2f"
+}
+```
+
+## Pet Cam Random Dog/Cat Images using Fetch
+
+### JS Code
+
+```js
+/* ---------- Config ---------- */
+const DEFAULT_SECS = Number(Overlay.data.displaySecs) || 30;
+
+/* ---------- DOM ---------- */
+const wrapEl = document.getElementById('pet-wrap');
+const imgEl = document.getElementById('pet-img');
+const nameEl = document.getElementById('pet-name');
+const factEl = document.getElementById('pet-fact');
+
+let hideTimer;
+
+/* ---------- Helpers ---------- */
+async function getDog() {
+	const [pic, fact] = await Promise.all([
+		fetch('https://dog.ceo/api/breeds/image/random')
+			.then((r) => r.json())
+			.then((d) => d.message),
+		fetch('https://dog-api.kinduff.com/api/facts')
+			.then((r) => r.json())
+			.then((d) => d.facts?.[0] || 'Dogs are awesome!'),
+	]);
+	return { img: pic, name: 'Random Dog', fact };
+}
+
+async function getCat() {
+	const [imgPath, fact] = await Promise.all([
+		fetch('https://cataas.com/cat?json=true')
+			.then((r) => r.json())
+			.then((d) => `https://cataas.com${d.url}`),
+		fetch('https://catfact.ninja/fact')
+			.then((r) => r.json())
+			.then((d) => d.fact),
+	]);
+	return { img: imgPath, name: 'Random Cat', fact };
+}
+
+async function fetchPet(animal) {
+	switch (animal.toLowerCase()) {
+		case 'cat':
+			return getCat();
+		default:
+			return getDog(); // fallback = dog
+	}
+}
+
+async function showOverlay(animal) {
+	const { img, name, fact } = await fetchPet(animal || 'dog');
+
+	clearTimeout(hideTimer);
+	imgEl.src = img;
+	nameEl.textContent = name;
+	factEl.textContent = fact;
+
+	wrapEl.classList.remove('hidden');
+	hideTimer = setTimeout(() => wrapEl.classList.add('hidden'), DEFAULT_SECS * 1000);
+}
+
+/* ---------- Chat Listener ---------- */
+Overlay.on('chat', async (data) => {
+	if (data.message.startsWith('!pet')) {
+		const animal = data.message.split(' ')[1];
+		showOverlay(animal);
+	}
+});
+
+showOverlay();
+```
+
+### HTML
+
+```html
+<div id="pet-wrap" class="hidden">
+	<img id="pet-img" />
+	<h3 id="pet-name"></h3>
+	<p id="pet-fact"></p>
+</div>
+```
+
+### CSS Styling
+
+```css
+#pet-wrap {
+  --bg: {{bgColor}};
+  --accent: {{accentColor}};
+  --text: {{textColor}};
+
+  font-family: "Segoe UI", Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding: 1rem;
+  border-radius: 10px;
+  max-width: 100%;
+  text-align: center;
+  overflow: hidden;
+  height: 100%;
+}
+
+#pet-wrap.hidden { display: none; }
+
+#pet-img {
+  width: 100%;
+  max-height: 85%;
+  object-fit: contain;
+  border-radius: 8px;
+  margin-bottom: 0.75rem;
+}
+
+#pet-name   { margin: 0.25rem 0; color: var(--accent); }
+#pet-fact   { font-size: 0.95rem; line-height: 1.3; }
+```
+
+### Configs
+
+```json
+{
+  "displaySecs": {
+    "type": "number",
+    "label": "Display time (sec)",
+    "order": 1,
+    "value": 30,
+    "min": 5,
+    "max": 120
+  },
+  "accentColor": {
+    "type": "colorpicker",
+    "label": "Accent colour",
+    "order": 2,
+    "value": "#ffb347"
+  },
+  "textColor": {
+    "type": "colorpicker",
+    "label": "Text colour",
+    "order": 3,
+    "value": "#ffffff"
+  },
+  "bgColor": {
+    "type": "colorpicker",
+    "label": "Background colour",
+    "order": 4,
+    "value": "#1e1e2f"
+  }
+}
+```
+
+### Data
+
+```json
+{
+	"bgColor": "transparent",
+	"textColor": "#ffffff",
+	"accentColor": "#ffb347",
+	"displaySecs": 30
+}
+```
+
+
+
+## Art Canvas
+
+### JS Code
+
+```js
+/* ------------------------------------------------------------------ */
+/* 0.  Responsive transparent canvas setup                            */
+/* ------------------------------------------------------------------ */
+const cvs = document.getElementById("canvas");
+const list = document.getElementById("chat-list");
+const ctx = cvs.getContext("2d");
+
+function fitCanvas() {
+	const dpr = window.devicePixelRatio || 1;
+	const rect = cvs.getBoundingClientRect();
+	const w = Math.round(rect.width * dpr);
+	const h = Math.round(rect.height * dpr);
+	if (w === cvs.width && h === cvs.height) return; // size unchanged
+	cvs.width = w;
+	cvs.height = h;
+	ctx.scale(dpr, dpr);
+}
+fitCanvas();
+window.addEventListener("resize", fitCanvas);
+
+/* ------------------------------------------------------------------ */
+/* 1.  Drawing helpers                                                */
+/* ------------------------------------------------------------------ */
+const defaultColor = Overlay.data?.penColor || "#000000";
+const defaultSize = Number(Overlay.data?.penSize) || 3;
+
+function drawLine(x1, y1, x2, y2, color = defaultColor, size = defaultSize) {
+	ctx.strokeStyle = color;
+	ctx.lineWidth = size;
+	ctx.lineCap = "round";
+	ctx.beginPath();
+	ctx.moveTo(x1, y1);
+	ctx.lineTo(x2, y2);
+	ctx.stroke();
+}
+
+function drawCurve(
+	x1,
+	y1,
+	cx,
+	cy,
+	x2,
+	y2,
+	color = defaultColor,
+	size = defaultSize
+) {
+	ctx.strokeStyle = color;
+	ctx.lineWidth = size;
+	ctx.lineCap = "round";
+	ctx.beginPath();
+	ctx.moveTo(x1, y1);
+	ctx.quadraticCurveTo(cx, cy, x2, y2);
+	ctx.stroke();
+}
+
+function drawStroke(pts, color = defaultColor, size = defaultSize) {
+	if (pts.length < 2) return;
+	ctx.strokeStyle = color;
+	ctx.lineWidth = size;
+	ctx.lineCap = "round";
+	ctx.beginPath();
+	ctx.moveTo(pts[0][0], pts[0][1]);
+	for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+	ctx.stroke();
+}
+
+/* ------------------------------------------------------------------ */
+/* 2.  Runtime config & helpers                                       */
+/* ------------------------------------------------------------------ */
+const cfg = Overlay.data ?? {};
+
+/* ------------------------------------------------------------------ */
+/*  Startup “how-to” message                                          */
+/* ------------------------------------------------------------------ */
+if (cfg.showStartupMessage !== false) {
+	const help =
+		"👋 Art Canvas active!  Draw with " +
+		"`!line x1 y1 x2 y2 [#hex] [size]`,  " +
+		"`!stroke x1,y1 x2,y2 …`,  " +
+		"`!curve x1 y1 cx cy x2 y2`,  " +
+		"and `!clear`.  Paste multiple commands in one chat line " +
+		"— each starting with `!`.  Mods can use `!subscribersonly`, " +
+		"`!followers`, `!modonly`, `!anyone`, `!chatoff`, `!chaton` " +
+		"to change who may draw.";
+	Overlay.chatbot({ message: `[Art Canvas] ${help}` });
+}
+
+/* Chat on/off & allowed levels can be changed at runtime (mod cmds)  */
+let chatEnabled = cfg.allowChat !== false;
+let allowedLevelsSet = new Set(cfg.userLevels ?? ["anyone"]);
+
+/* Map for quick check when userLevels is present in ChatEvent        */
+function userAllowed(userLevels) {
+	if (!chatEnabled) return false;
+	const L = allowedLevelsSet;
+	if (L.has("anyone")) return true;
+
+	if (userLevels.isSelf) return true; // streamer always allowed
+	if (L.has("mod") && userLevels.mod) return true;
+	if (L.has("vip") && userLevels.vip) return true;
+	if (L.has("subscriber") && userLevels.subscriber) return true;
+	if (L.has("tier2") && userLevels.tier2) return true;
+	if (L.has("tier3") && userLevels.tier3) return true;
+	if (L.has("follower") && userLevels.follower) return true;
+	return false;
+}
+
+/* ------------------------------------------------------------------ */
+/* 3.  Command parser (multi-command, single-line)                    */
+/* ------------------------------------------------------------------ */
+function processCommands(raw) {
+	if (!raw) return;
+	const tokens = raw.trim().split(/\s+/);
+	let i = 0;
+
+	while (i < tokens.length) {
+		const cmd = tokens[i]?.toLowerCase();
+		if (!cmd?.startsWith("!")) {
+			i++;
+			continue;
+		}
+
+		/* ---------- drawing commands --------------------------- */
+		if (cmd === "!clear") {
+			ctx.clearRect(0, 0, cvs.width, cvs.height);
+			i++;
+			continue;
+		}
+
+		if (cmd === "!line" && i + 4 < tokens.length) {
+			const x1 = +tokens[i + 1],
+				y1 = +tokens[i + 2],
+				x2 = +tokens[i + 3],
+				y2 = +tokens[i + 4];
+			let color = defaultColor,
+				size = defaultSize,
+				next = i + 5;
+			if (tokens[next] && /^#[0-9a-f]{3,8}$/i.test(tokens[next])) {
+				color = tokens[next];
+				next++;
+			}
+			if (tokens[next] && /^\d+(\.\d+)?$/.test(tokens[next])) {
+				size = +tokens[next];
+				next++;
+			}
+			drawLine(x1, y1, x2, y2, color, size);
+			i = next;
+			continue;
+		}
+
+		if (cmd === "!curve" && i + 6 < tokens.length) {
+			const x1 = +tokens[i + 1],
+				y1 = +tokens[i + 2],
+				cx = +tokens[i + 3],
+				cy = +tokens[i + 4],
+				x2 = +tokens[i + 5],
+				y2 = +tokens[i + 6];
+			let color = defaultColor,
+				size = defaultSize,
+				next = i + 7;
+			if (tokens[next] && /^#[0-9a-f]{3,8}$/i.test(tokens[next])) {
+				color = tokens[next];
+				next++;
+			}
+			if (tokens[next] && /^\d+(\.\d+)?$/.test(tokens[next])) {
+				size = +tokens[next];
+				next++;
+			}
+			drawCurve(x1, y1, cx, cy, x2, y2, color, size);
+			i = next;
+			continue;
+		}
+
+		if (cmd === "!stroke" && i + 2 < tokens.length) {
+			let j = i + 1;
+			const pts = [];
+			while (j < tokens.length && !tokens[j].startsWith("!")) {
+				if (/^\d+,\d+$/.test(tokens[j]))
+					pts.push(tokens[j].split(",").map(Number));
+				else break;
+				j++;
+			}
+			if (pts.length >= 2) {
+				let color = defaultColor,
+					size = defaultSize;
+				if (tokens[j] && /^#[0-9a-f]{3,8}$/i.test(tokens[j])) {
+					color = tokens[j];
+					j++;
+				}
+				if (tokens[j] && /^\d+(\.\d+)?$/.test(tokens[j])) {
+					size = +tokens[j];
+					j++;
+				}
+				drawStroke(pts, color, size);
+			}
+			i = j;
+			continue;
+		}
+
+		/* ---------- unrecognised ------------------------------- */
+		i++;
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* 4.  Mod-only runtime commands (do NOT change Overlay.data)         */
+/* ------------------------------------------------------------------ */
+const allowModCommands = cfg.allowModCommands !== false;
+
+function tryHandleModCommand(evt) {
+	if (!allowModCommands) return false;
+
+	const isModOrBroad = evt.userLevels?.mod || evt.userLevels?.isSelf;
+
+	if (!isModOrBroad) return false;
+
+	const msg = evt.message.toLowerCase();
+	if (msg.startsWith("!chatoff")) {
+		chatEnabled = false;
+		return true;
+	}
+	if (msg.startsWith("!chaton")) {
+		chatEnabled = true;
+		return true;
+	}
+
+	if (msg.startsWith("!subscribersonly") || msg.startsWith("!subscriberonly")) {
+		allowedLevelsSet = new Set(["subscriber", "vip", "mod", "broadcaster"]);
+		return true;
+	}
+	if (msg.startsWith("!modonly")) {
+		allowedLevelsSet = new Set(["mod", "broadcaster"]);
+		return true;
+	}
+	if (msg.startsWith("!followers")) {
+		allowedLevelsSet = new Set([
+			"follower",
+			"subscriber",
+			"vip",
+			"mod",
+			"broadcaster",
+		]);
+		return true;
+	}
+	if (msg.startsWith("!anyone")) {
+		allowedLevelsSet = new Set(["anyone"]);
+		return true;
+	}
+	return false;
+}
+
+/* helper to print feedback in chat via overlay bot */
+function sys(msg) {
+	Overlay.chatbot({ message: `[Art Canvas] ${msg}` });
+}
+
+/* ------------------------------------------------------------------ */
+/* 5.  Listeners: Chat, Lumia, Alerts                                 */
+/* ------------------------------------------------------------------ */
+
+/* Chat ------------------------------------------------------------- */
+if (cfg.allowChat !== false) {
+	Overlay.on("chat", (e) => {
+			/* mod commands first */
+			if (tryHandleModCommand(e)) {
+				sys("Runtime chat rules updated.");
+				return;
+			}
+            if (e.username?.toLowerCase() === "lumiastream" || e.username?.toLowerCase() === "@lumiastream") return;
+			/* drawing commands */
+			if (userAllowed(e.userLevels ?? {})) processCommands(e.message);
+		}
+	);
+}
+
+/* Lumia overlaycontent --------------------------------------------- */
+if (cfg.allowLumia) {
+	Overlay.on("overlaycontent", (d) => {
+			processCommands(d.content);
+		}
+	);
+}
+
+/* Alerts (Bits & Points) ------------------------------------------- */
+Overlay.on("alert", (data) => {
+		const alert = data.alert;
+		const message = data.extraSettings?.message || "";
+
+		/* Bits */
+		if (alert === "twitch-bits" && cfg.allowBits) {
+			const bits = data.dynamic.value ?? 0;
+			if (bits >= (cfg.minBits ?? 1)) {
+				processCommands(message);
+			}
+			return;
+		}
+
+		/* Twitch Channel Points */
+		if (alert === "twitch-points" && cfg.allowTwitchPoints) {
+			const trig = cfg.twitchPointsCommand?.toLowerCase() || "";
+			const content = message.toLowerCase();
+			if (!trig || trig === data.extraSettings.command) processCommands(content);
+			return;
+		}
+
+		/* Kick Points */
+		if (alert === "kick-points" && cfg.allowKickPoints) {
+			const trig = cfg.kickPointsCommand?.toLowerCase() || "";
+			const content = message.toLowerCase();
+			if (!trig || trig === data.extraSettings.command) processCommands(content);
+			return;
+		}
+	}
+);
+
+/* ------------------------------------------------------------------ */
+/* 6.  Periodic drawing ideas / prompts                               */
+/* ------------------------------------------------------------------ */
+if (cfg.enableIdeas) {
+	const mins = Math.max(1, Number(cfg.ideaIntervalMinutes) || 5);
+
+	/** Each idea has:
+	 *  prompt  – a short description
+	 *  cmds    – ONE chat line (space- or ;-separated) ready to paste
+	 *  Co-ords assume 1920×1080 canvas; scale if you use another size
+	 */
+	const ideas = [
+		{
+			prompt: "Tiny yellow DUCK (3 squares):",
+			cmds: "!line 940 540 980 540 #ffff00 40 ; !line 940 580 980 580 #ffff00 40 ; !line 960 520 960 520 #000000 40",
+		},
+		{
+			prompt: "8-bit HEART:",
+			cmds: "!stroke 960,300 1040,380 1040,500 960,580 880,500 880,380 960,300 #ff66cc 12",
+		},
+		{
+			prompt: "POKÉ BALL:",
+			cmds: "!stroke 960,440 1120,540 960,640 800,540 960,440 #ffffff 10 !stroke 960,640 1120,540 960,440 800,540 960,640 #ff0000 10 !line 800 540 1120 540 #000000 12",
+		},
+		{
+			prompt: "Rainbow ARC with curves:",
+			cmds: "!curve 300 700 960 200 1620 700 #ff0000 12 !curve 300 760 960 260 1620 760 #ff7f00 12 !curve 300 820 960 320 1620 820 #ffff00 12",
+		},
+		{
+			prompt: "SMILEY face:",
+			cmds: "!stroke 960,300 1190,540 960,780 730,540 960,300 #ffff00 12 !stroke 860,460 900,460 900,500 860,500 860,460 #000000 10 !stroke 1020,460 1060,460 1060,500 1020,500 1020,460 #000000 10 !line 860 640 1060 640 #000000 10",
+		},
+		{
+			prompt: "Five-point STAR:",
+			cmds: "!stroke 960,200 1040,460 1300,460 1080,620 1160,880 960,720 760,880 840,620 620,460 880,460 960,200 #ffd700 8",
+		},
+		{
+			prompt: "TINY HOUSE:",
+			cmds: "!line 780 660 1140 660 #ffcc66 10 !line 780 660 780 880 #ffcc66 10 !line 1140 660 1140 880 #ffcc66 10 !line 780 880 1140 880 #ffcc66 10 !stroke 780,660 960,500 1140,660 #ff9966 10",
+		},
+		{
+			prompt: "COFFEE CUP with steam:",
+			cmds: "!line 900 700 1020 700 #a8734c 12 !line 900 700 900 780 #a8734c 12 !line 1020 700 1020 780 #a8734c 12 !line 900 780 1020 780 #a8734c 12 !curve 940 660 960 620 980 660 #ffffff 10 !curve 960 620 980 580 1000 620 #ffffff 10",
+		},
+		{
+			prompt: "LIGHTNING bolt (stroke):",
+			cmds: "!stroke 960,300 1040,500 880,500 1060,780 #ffff00 14",
+		},
+		{
+			prompt: "SPIRAL galaxy (3 curves):",
+			cmds: "!curve 960 540 1320 540 1320 200 #66ccff 10 !curve 960 540 600 540 600 880 #66ccff 10 !curve 960 540 1260 540 960 820 #66ccff 10",
+		},
+		{
+			prompt: "MARIO QUESTION BLOCK:",
+			cmds: "!line 860 400 1060 400 #ffcc00 40 !line 860 400 860 600 #ffcc00 40 !line 1060 400 1060 600 #ffcc00 40 !line 860 600 1060 600 #ffcc00 40 !line 920 480 1000 480 #ffffff 40 !line 920 480 920 520 #ffffff 40 !line 1000 480 1000 520 #ffffff 40 !line 920 520 1000 520 #ffffff 40",
+		},
+		{
+			prompt: "AMONG US crewmate:",
+			cmds: "!stroke 960,400 1180,400 1220,450 1220,820 700,820 700,450 740,400 960,400 #ff4141 12 !stroke 820,480 1040,480 1080,520 1080,620 780,620 780,520 820,480 #aeeffd 12 !stroke 1260,550 1340,550 1340,800 1260,800 1260,550 #ff4141 12",
+		},
+		{
+			prompt: "8-bit SWORD:",
+			cmds: "!line 960 300 960 780 #cccccc 40 !line 920 780 1000 780 #663300 40 !line 880 820 1040 820 #663300 40",
+		},
+		{
+			prompt: "CHERRY blossom branch (curves + lines):",
+			cmds: "!line 700 780 1220 780 #8b4513 12 !curve 800 760 850 700 900 760 #ffb6c1 12 !curve 1000 760 1050 700 1100 760 #ffb6c1 12",
+		},
+		{
+			prompt: "RAINBOW stripes (7 lines):",
+			cmds: "!line 0 200 1920 200 #ff0000 16 !line 0 240 1920 240 #ff7f00 16 !line 0 280 1920 280 #ffff00 16 !line 0 320 1920 320 #00ff00 16 !line 0 360 1920 360 #0000ff 16 !line 0 400 1920 400 #4b0082 16 !line 0 440 1920 440 #9400d3 16",
+		},
+	];
+
+	setInterval(() => {
+		const idea = ideas[Math.floor(Math.random() * ideas.length)];
+		Overlay.chatbot({ message: `[Art Canvas Idea] ${idea.prompt}\n${idea.cmds}` });
+	}, mins * 60_000);
+}
+```
+
+### HTML
+
+```html
+<div id="board">
+    <canvas id="canvas"></canvas>
+    <ul id="chat-list"></ul>
+</div>
+```
+
+### CSS Styling
+
+```css
+/* Make the whole overlay fill whatever size you give the browser-source */
+html, body, #board {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+}
+
+/* Canvas covers the full area and stays transparent */
+#canvas {
+    width: 100%;
+    height: 100%;
+    display: block;          /* removes stray inline-block gaps */
+    background: transparent; /* fully see-through */
+    touch-action: none;
+}
+
+/* Optional grid (still transparent behind the lines) */
+#canvas.grid {
+    background-image:
+        repeating-linear-gradient(0deg , transparent 0 29px, #d0d0d055 30px),
+        repeating-linear-gradient(90deg, transparent 0 29px, #d0d0d055 30px);
+}
+
+/* Chat history can stay the same — stretches to overlay width */
+#chat-list {
+    list-style: none;
+    margin: 0;
+    padding: 4px;
+    width: 100%;
+    max-height: 160px;
+    overflow-y: auto;
+    background: #ffffffc0;   /* 75 % opaque white strip */
+    font-family: "Segoe UI", sans-serif;
+    font-size: 14px;
+    border: 1px solid #ccc;
+}
+#chat-list li { margin: 2px 0; }
+.user { font-weight: 600; color: ; margin-right: 4px; }
+```
+
+### Configs
+
+```json
+{
+  "showStartupMessage": {
+    "type": "checkbox",
+    "label": "Send a chatbot help message when the overlay loads",
+    "order": 1,
+    "value": true
+  },
+  "allowModCommands": {
+    "type": "checkbox",
+    "label": "Enable moderator runtime commands",
+    "order": 2,
+    "value": true
+  },
+  "enableIdeas": {
+    "type": "checkbox",
+    "label": "Send periodic drawing ideas",
+    "order": 3,
+    "value": false
+  },
+  "ideaIntervalMinutes": {
+    "min": 1,
+    "type": "number",
+    "label": "Minutes between ideas",
+    "order": 4,
+    "value": 5,
+    "visibleIf": {
+      "key": "enableIdeas",
+      "equals": true
+    }
+  },
+  "allowChat": {
+    "type": "checkbox",
+    "label": "Enable chat commands",
+    "order": 5,
+    "value": true
+  },
+  "userLevels": {
+    "type": "multiselect",
+    "label": "Allowed chat user-levels",
+    "order": 6,
+    "value": [
+      "anyone"
+    ],
+    "options": [
+      "anyone",
+      "mod",
+      "vip",
+      "subscriber",
+      "tier2",
+      "tier3",
+      "follower"
+    ]
+  },
+  "allowBits": {
+    "type": "checkbox",
+    "label": "Enable Bits (Twitch Cheer)",
+    "order": 7,
+    "value": false
+  },
+  "minBits": {
+    "min": 1,
+    "type": "number",
+    "label": "Minimum Bits to accept",
+    "order": 8,
+    "value": 100,
+    "visibleIf": {
+      "key": "allowBits",
+      "equals": true
+    }
+  },
+  "allowTwitchPoints": {
+    "type": "checkbox",
+    "label": "Enable Twitch Channel-Points",
+    "order": 9,
+    "value": false
+  },
+  "twitchPointsCommand": {
+    "type": "input",
+    "label": "Twitch Points trigger name (Must also create the point command in Lumia with the same name)",
+    "order": 10,
+    "value": "art",
+    "visibleIf": {
+      "key": "allowTwitchPoints",
+      "equals": true
+    }
+  },
+  "allowKickPoints": {
+    "type": "checkbox",
+    "label": "Enable Kick Points",
+    "order": 11,
+    "value": false
+  },
+  "kickPointsCommand": {
+    "type": "input",
+    "label": "Kick Points trigger name (Must also create the point command in Lumia with the same name)",
+    "order": 12,
+    "value": "art",
+    "visibleIf": {
+      "key": "allowKickPoints",
+      "equals": true
+    }
+  }
+}
+```
+
+### Data
+
+```json
+{
+  "minBits": 0,
+  "minBitss": 0,
+  "allowBits": true,
+  "allowChat": true,
+  "minBitss3": 0,
+  "allowLumia": true,
+  "userLevels": [
+    "anyone"
+  ],
+  "enableIdeas": true,
+  "allowKickPoints": true,
+  "allowModCommands": true,
+  "allowTwitchPoints": true,
+  "kickPointsCommand": "art",
+  "showStartupMessage": true,
+  "ideaIntervalMinutes": 2,
+  "twitchPointsCommand": "art"
+}
+```
